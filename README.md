@@ -17,7 +17,7 @@ Monorepo for a two-plane job automation system:
   - Async match runs and apply runs
   - Callback emitter back to main backend
 - **Legacy compatibility**
-  - Existing `/agent/run`, `/applications`, and `/admin` endpoints remain available.
+  - `/agent/run` and `/applications` are deprecated (`410 Gone`); `/admin` remains available.
 
 ## Local setup
 
@@ -71,6 +71,7 @@ alembic upgrade head
 
 ## Notes
 
-- Current source adapters are scaffolded synthetic adapters with the target interface for real integrations.
+- Live discovery connectors are available for Greenhouse, Lever, and SmartRecruiters.
+- Set `USE_ONLY_LIVE_ADAPTERS=true` and configure seed envs to disable synthetic fallback listings.
 - Cloud apply service includes autonomous run lifecycle, attempt statuses, and signed callback wiring.
 - For production scraping and auto-submit usage, add legal/compliance review and provider-specific hardening.

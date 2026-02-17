@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Protocol
 from uuid import uuid4
@@ -315,6 +316,138 @@ def _json_loads(value: str | None, default: Any) -> Any:
         return default
 
 
+def _sanitize_resume_text(value: str) -> str:
+    # PostgreSQL TEXT rejects NUL bytes; binary uploads (PDF/DOCX) may include them.
+    without_nul = value.replace("\x00", "")
+    normalized = without_nul.replace("\r\n", "\n").replace("\r", "\n")
+    scrubbed = "".join(
+        char if char in {"\n", "\t"} or ord(char) >= 32 else " "
+        for char in normalized
+    )
+    compacted = re.sub(r"[ \t]+", " ", scrubbed)
+    compacted = re.sub(r"\n{3,}", "\n\n", compacted)
+    return compacted.strip()
+
+
+_RESUME_INTEREST_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("python", (r"\bpython\b",)),
+    ("fastapi", (r"\bfastapi\b",)),
+    ("sqlalchemy", (r"\bsqlalchemy\b",)),
+    ("django", (r"\bdjango\b",)),
+    ("flask", (r"\bflask\b",)),
+    ("java", (r"\bjava\b",)),
+    ("javascript", (r"\bjavascript\b", r"\bjs\b")),
+    ("typescript", (r"\btypescript\b", r"\bts\b")),
+    ("react", (r"\breact\b",)),
+    ("nextjs", (r"\bnext\.?js\b",)),
+    ("nodejs", (r"\bnode\.?js\b",)),
+    ("graphql", (r"\bgraphql\b",)),
+    ("rest-api", (r"\brest(?:ful)?\s+api\b", r"\brest\b")),
+    ("sql", (r"\bsql\b",)),
+    ("postgresql", (r"\bpostgres(?:ql)?\b",)),
+    ("mysql", (r"\bmysql\b",)),
+    ("mongodb", (r"\bmongodb\b", r"\bmongo\b")),
+    ("redis", (r"\bredis\b",)),
+    ("aws", (r"\baws\b", r"\bamazon web services\b")),
+    ("gcp", (r"\bgcp\b", r"\bgoogle cloud\b")),
+    ("azure", (r"\bazure\b",)),
+    ("docker", (r"\bdocker\b",)),
+    ("kubernetes", (r"\bkubernetes\b", r"\bk8s\b")),
+    ("terraform", (r"\bterraform\b",)),
+    ("ci-cd", (r"\bci/cd\b", r"\bci-cd\b", r"\bcontinuous integration\b")),
+    ("devops", (r"\bdevops\b",)),
+    ("ai", (r"\bartificial intelligence\b", r"\bai\b")),
+    ("machine-learning", (r"\bmachine learning\b", r"\bml\b")),
+    ("deep-learning", (r"\bdeep learning\b",)),
+    ("nlp", (r"\bnlp\b", r"\bnatural language processing\b")),
+    ("llm", (r"\bllm(?:s)?\b", r"\blarge language model(?:s)?\b")),
+    ("data-science", (r"\bdata science\b", r"\bdata scientist\b")),
+    ("data-engineering", (r"\bdata engineering\b", r"\bdata engineer\b")),
+    ("mlops", (r"\bmlops\b",)),
+    ("automation", (r"\bautomation\b",)),
+    ("backend", (r"\bbackend\b", r"\bback-end\b")),
+    ("frontend", (r"\bfrontend\b", r"\bfront-end\b")),
+    ("full-stack", (r"\bfull stack\b", r"\bfull-stack\b")),
+    ("security", (r"\bsecurity\b", r"\bcybersecurity\b")),
+    ("robotics", (r"\brobotics\b",)),
+    ("climate", (r"\bclimate\b",)),
+)
+
+_RESUME_INTEREST_ALIAS_TO_CANONICAL: dict[str, str] = {
+    "machine learning": "machine-learning",
+    "artificial intelligence": "ai",
+    "google cloud": "gcp",
+    "amazon web services": "aws",
+    "rest api": "rest-api",
+    "full stack": "full-stack",
+    "next.js": "nextjs",
+    "node.js": "nodejs",
+}
+
+_RESUME_NOISE_TOKENS = {
+    "skills",
+    "interests",
+    "experience",
+    "project",
+    "projects",
+    "summary",
+    "professional",
+    "engineer",
+    "developer",
+    "team",
+    "work",
+}
+
+
+def _normalize_interest_token(token: str) -> str:
+    normalized = token.strip().lower()
+    normalized = re.sub(r"[^a-z0-9+#.\- ]+", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if not normalized:
+        return ""
+    if normalized in _RESUME_INTEREST_ALIAS_TO_CANONICAL:
+        return _RESUME_INTEREST_ALIAS_TO_CANONICAL[normalized]
+    return normalized.replace(" ", "-")
+
+
+def _extract_resume_interests(resume_text: str, *, max_items: int = 15) -> list[str]:
+    normalized = resume_text.lower()
+    ranked: list[tuple[int, str]] = []
+    seen: set[str] = set()
+
+    for canonical, patterns in _RESUME_INTEREST_PATTERNS:
+        first_index: int | None = None
+        for pattern in patterns:
+            match = re.search(pattern, normalized)
+            if match is not None:
+                first_index = match.start() if first_index is None else min(first_index, match.start())
+        if first_index is None:
+            continue
+        ranked.append((first_index, canonical))
+        seen.add(canonical)
+
+    for section_match in re.finditer(
+        r"(?:skills?|interests?)\s*[:\-]\s*([^\n]{1,300})",
+        normalized,
+    ):
+        segment = section_match.group(1)
+        for candidate in re.split(r"[,/;|]", segment):
+            normalized_token = _normalize_interest_token(candidate)
+            if (
+                not normalized_token
+                or normalized_token in seen
+                or normalized_token in _RESUME_NOISE_TOKENS
+                or len(normalized_token) < 2
+                or len(normalized_token) > 40
+            ):
+                continue
+            ranked.append((section_match.start(), normalized_token))
+            seen.add(normalized_token)
+
+    ranked.sort(key=lambda entry: entry[0])
+    return [interest for _, interest in ranked[:max_items]]
+
+
 class MainPlatformStore:
     def __init__(self, session_factory: Callable[[], Session]) -> None:
         self._session_factory = session_factory
@@ -424,6 +557,15 @@ class MainPlatformStore:
 
     def upsert_resume(self, user_id: str, payload: ResumeUpsertRequest) -> ResumeResponse:
         now = datetime.utcnow()
+        sanitized_filename = payload.filename.replace("\x00", "").strip()
+        if not sanitized_filename:
+            raise ValueError("Resume filename is required")
+
+        sanitized_resume_text = _sanitize_resume_text(payload.resume_text)
+        if not sanitized_resume_text:
+            raise ValueError("Resume text is empty after sanitization")
+        parsed_interests = _extract_resume_interests(sanitized_resume_text)
+
         with self._session_factory() as session:
             row = session.scalar(
                 select(ResumeRow).where(ResumeRow.user_id == user_id).limit(1)
@@ -432,18 +574,39 @@ class MainPlatformStore:
                 row = ResumeRow(
                     id=str(uuid4()),
                     user_id=user_id,
-                    filename=payload.filename,
-                    resume_text=payload.resume_text,
+                    filename=sanitized_filename,
+                    resume_text=sanitized_resume_text,
                     updated_at=now,
                 )
                 session.add(row)
             else:
-                row.filename = payload.filename
-                row.resume_text = payload.resume_text
+                row.filename = sanitized_filename
+                row.resume_text = sanitized_resume_text
                 row.updated_at = now
+
+            if parsed_interests:
+                preferences_row = session.get(UserPreferenceRow, user_id)
+                if preferences_row is None:
+                    preferences_row = UserPreferenceRow(
+                        user_id=user_id,
+                        interests_json=_json_dumps(parsed_interests),
+                        locations_json=_json_dumps([]),
+                        applications_per_day=25,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    session.add(preferences_row)
+                else:
+                    preferences_row.interests_json = _json_dumps(parsed_interests)
+                    preferences_row.updated_at = now
 
             session.commit()
             session.refresh(row)
+            if parsed_interests:
+                logger.info(
+                    "resume_interests_parsed",
+                    extra={"user_id": user_id, "interest_count": len(parsed_interests)},
+                )
             return self._to_resume(row)
 
     def get_resume(self, user_id: str) -> ResumeResponse | None:

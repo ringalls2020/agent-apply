@@ -49,6 +49,9 @@ Legacy demo endpoints (`/agent/run`, `/applications`, `/admin`) are still presen
 - `POST /v1/agent/run`
 - `GET /v1/applications`
 
+`POST /v1/agent/run` triggers cloud discovery + matching and persists results per user.
+To avoid synthetic fallback listings, set `USE_ONLY_LIVE_ADAPTERS=true` in the cloud automation env and configure live adapter seed variables.
+
 Legacy routes `/agent/run` and `/applications` now return `410 Gone`.
 
 ### Callback ingestion

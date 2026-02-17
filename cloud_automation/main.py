@@ -45,13 +45,14 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     engine = create_db_engine(get_database_url(database_url))
     session_factory = create_session_factory(engine)
+    configured_adapters = build_configured_adapters()
 
     app = FastAPI(title="Job Intel API", version="0.1.0")
     app.state.engine = engine
     app.state.store = JobIntelStore(session_factory)
     app.state.discovery = DiscoveryCoordinator(
         store=app.state.store,
-        adapters=build_configured_adapters(),
+        adapters=configured_adapters,
     )
     app.state.matching = MatchingService(store=app.state.store)
     app.state.apply = ApplyService(store=app.state.store, callback_emitter=CallbackEmitter())
@@ -72,6 +73,16 @@ def create_app(database_url: str | None = None) -> FastAPI:
         os.getenv("ENABLE_EMBEDDED_DISCOVERY_LOOP", "true").strip().lower()
         in {"1", "true", "yes", "on"}
     )
+    if not configured_adapters:
+        logger.warning("discovery_adapters_not_configured")
+    else:
+        logger.info(
+            "discovery_adapters_configured",
+            extra={
+                "adapter_count": len(configured_adapters),
+                "sources": [adapter.source_name for adapter in configured_adapters],
+            },
+        )
 
     async def discovery_loop() -> None:
         while True:

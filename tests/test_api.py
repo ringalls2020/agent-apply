@@ -4,11 +4,65 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.main import create_app
+from backend.models import (
+    CloudMatchRunCreated,
+    CloudMatchRunStatus,
+    MatchRunStatus,
+    MatchedJob,
+)
+
+
+class FakeCloudClient:
+    def __init__(self) -> None:
+        self._next_run = 1
+        self._runs: dict[str, list[MatchedJob]] = {}
+
+    def run_discovery_now(self) -> dict[str, bool]:
+        return {"accepted": True}
+
+    def start_match_run(self, payload) -> CloudMatchRunCreated:
+        run_id = f"match-run-{self._next_run}"
+        self._next_run += 1
+
+        interests = payload.preferences.get("interests") or ["software"]
+        matches: list[MatchedJob] = []
+        for idx in range(payload.limit):
+            keyword = str(interests[idx % len(interests)]).title()
+            matches.append(
+                MatchedJob(
+                    external_job_id=f"{run_id}-job-{idx + 1}",
+                    title=f"{keyword} Engineer {idx + 1}",
+                    company=f"Live Board {idx + 1}",
+                    location=payload.location or "United States",
+                    apply_url=f"https://jobs.live-board.test/{idx + 1}",
+                    source="greenhouse",
+                    reason="Synthetic cloud fixture for API tests",
+                    score=max(0.1, 1.0 - (idx * 0.05)),
+                )
+            )
+
+        self._runs[run_id] = matches
+        return CloudMatchRunCreated(
+            run_id=run_id,
+            status=MatchRunStatus.queued,
+            status_url=f"/v1/match-runs/{run_id}",
+        )
+
+    def get_match_run(self, run_id: str) -> CloudMatchRunStatus:
+        matches = self._runs.get(run_id, [])
+        return CloudMatchRunStatus(
+            run_id=run_id,
+            status=MatchRunStatus.completed,
+            matches=matches,
+        )
 
 
 @pytest.fixture
 def test_client() -> Iterator[TestClient]:
-    app = create_app(database_url="sqlite+pysqlite:///:memory:")
+    app = create_app(
+        database_url="sqlite+pysqlite:///:memory:",
+        cloud_client=FakeCloudClient(),
+    )
     with TestClient(app) as client:
         yield client
 
@@ -123,6 +177,95 @@ def test_agent_run_requires_resume(test_client: TestClient) -> None:
     )
     assert response.status_code == 400
     assert "User resume not found" in response.json()["detail"]
+
+
+def test_resume_upload_sanitizes_nul_bytes(test_client: TestClient) -> None:
+    signup_body = _signup_user(
+        test_client,
+        full_name="Jane Doe",
+        email="jane-resume@example.com",
+    )
+    user_id = signup_body["user"]["id"]
+
+    response = test_client.put(
+        f"/v1/users/{user_id}/resume",
+        json={
+            "filename": "resume.pdf",
+            "resume_text": "header\x00body\x00tail",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "\x00" not in response.json()["resume_text"]
+    assert response.json()["resume_text"] == "headerbodytail"
+
+
+def test_resume_upload_updates_preferences_from_resume_content(test_client: TestClient) -> None:
+    signup_body = _signup_user(
+        test_client,
+        full_name="Jane Doe",
+        email="jane-skills@example.com",
+    )
+    user_id = signup_body["user"]["id"]
+
+    initial_preferences_response = test_client.put(
+        f"/v1/users/{user_id}/preferences",
+        json={
+            "interests": ["cooking", "travel"],
+            "locations": ["United States"],
+            "applications_per_day": 5,
+        },
+    )
+    assert initial_preferences_response.status_code == 200
+
+    resume_response = test_client.put(
+        f"/v1/users/{user_id}/resume",
+        json={
+            "filename": "resume.txt",
+            "resume_text": (
+                "Experienced backend engineer with Python, FastAPI, GraphQL, "
+                "Kubernetes, and AWS. Interests: MLOps, automation."
+            ),
+        },
+    )
+    assert resume_response.status_code == 200
+
+    preferences_response = test_client.get(f"/v1/users/{user_id}/preferences")
+    assert preferences_response.status_code == 200
+    preferences = preferences_response.json()
+    interests = preferences["interests"]
+
+    assert "python" in interests
+    assert "fastapi" in interests
+    assert "graphql" in interests
+    assert "kubernetes" in interests
+    assert "aws" in interests
+    assert "mlops" in interests
+    assert "automation" in interests
+    assert "cooking" not in interests
+    assert "travel" not in interests
+    assert preferences["applications_per_day"] == 5
+    assert preferences["locations"] == ["United States"]
+
+
+def test_resume_upload_rejects_empty_after_sanitization(test_client: TestClient) -> None:
+    signup_body = _signup_user(
+        test_client,
+        full_name="Jane Doe",
+        email="jane-empty@example.com",
+    )
+    user_id = signup_body["user"]["id"]
+
+    response = test_client.put(
+        f"/v1/users/{user_id}/resume",
+        json={
+            "filename": "resume.pdf",
+            "resume_text": "\u0000\u0000\u0000",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Resume text is empty after sanitization"
 
 
 def test_agent_run_and_list_applications_are_user_scoped(test_client: TestClient) -> None:

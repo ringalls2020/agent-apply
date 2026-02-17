@@ -70,21 +70,29 @@ class CloudAutomationClient:
         params: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         url = f"{self._settings.base_url.rstrip('/')}{path}"
-        with httpx.Client(timeout=self._settings.timeout_seconds) as client:
-            response = client.request(
-                method=method,
-                url=url,
-                json=json_body,
-                params=params,
-                headers=self._auth_headers(),
-            )
+        try:
+            with httpx.Client(timeout=self._settings.timeout_seconds) as client:
+                response = client.request(
+                    method=method,
+                    url=url,
+                    json=json_body,
+                    params=params,
+                    headers=self._auth_headers(),
+                )
+        except httpx.HTTPError as exc:
+            raise CloudClientError(f"Cloud API request failed: {exc}") from exc
 
         if response.status_code >= 400:
             raise CloudClientError(
                 f"Cloud API request failed: status={response.status_code} body={response.text}"
             )
 
-        return response.json()
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise CloudClientError(
+                f"Cloud API request failed: invalid JSON response from {url}"
+            ) from exc
 
     def start_match_run(self, payload: CloudMatchRunRequest) -> CloudMatchRunCreated:
         body = self._request(
@@ -93,6 +101,9 @@ class CloudAutomationClient:
             json_body=payload.model_dump(mode="json"),
         )
         return CloudMatchRunCreated.model_validate(body)
+
+    def run_discovery_now(self) -> Dict[str, Any]:
+        return self._request(method="POST", path="/v1/discovery/run")
 
     def get_match_run(self, run_id: str) -> CloudMatchRunStatus:
         body = self._request(method="GET", path=f"/v1/match-runs/{run_id}")

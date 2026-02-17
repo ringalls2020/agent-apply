@@ -39,9 +39,13 @@ All `/v1/*` endpoints require service JWT auth.
 
 ### Live adapter seeds (optional)
 
+- `USE_ONLY_LIVE_ADAPTERS` (default: `false`; set to `true` to disable synthetic fallback sources)
 - `GREENHOUSE_BOARD_TOKENS` (comma-separated board tokens)
 - `LEVER_COMPANIES` (comma-separated company slugs)
 - `SMARTRECRUITERS_COMPANIES` (comma-separated company slugs)
+
+When `USE_ONLY_LIVE_ADAPTERS=true`, discovery only uses the configured live connectors above.
+If seed variables are empty in that mode, discovery returns no jobs.
 
 ### Callback emitter (cloud -> main)
 
@@ -74,7 +78,13 @@ Each adapter follows:
 - `parse(raw, url) -> NormalizedJob`
 - `next_cursor() -> Optional[str]`
 
-Current adapters are synthetic scaffolds for these source families:
+Live adapters are currently implemented for:
+
+- greenhouse
+- lever
+- smartrecruiters
+
+Synthetic fallback adapters remain available (when `USE_ONLY_LIVE_ADAPTERS=false`) for:
 
 - linkedin
 - indeed

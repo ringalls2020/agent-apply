@@ -2,7 +2,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from time import perf_counter
+from time import perf_counter, sleep
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, status
@@ -23,7 +23,8 @@ from .logging_config import (
     reset_request_logging_context,
 )
 from .models import (
-    AgentRunRequest,
+    ApplicationRecord,
+    ApplicationStatus,
     AgentRunResponse,
     AuthLoginRequest,
     AuthResponse,
@@ -33,11 +34,12 @@ from .models import (
     ApplyRunStartRequest,
     ApplyRunStartResponse,
     ApplyRunStatusResponse,
-    CandidateProfile,
     CallbackAckResponse,
     MatchRunStartRequest,
     MatchRunStartResponse,
+    MatchRunStatus,
     MatchRunStatusResponse,
+    Opportunity,
     PreferenceResponse,
     PreferenceUpsertRequest,
     ResumeResponse,
@@ -55,7 +57,6 @@ from .security import (
 from .services import (
     CloudOrchestrationService,
     MainPlatformStore,
-    OpportunityAgent,
     PostgresStore,
 )
 
@@ -106,9 +107,8 @@ def create_app(
     fastapi_app = FastAPI(title="Agent Apply", version="0.2.0")
     fastapi_app.state.engine = engine
 
-    # Legacy agent stack kept for backward compatibility.
+    # Legacy application records store (used for /v1/applications).
     fastapi_app.state.store = PostgresStore(session_factory=session_factory)
-    fastapi_app.state.agent = OpportunityAgent(store=fastapi_app.state.store)
 
     # New main-platform stack.
     fastapi_app.state.main_store = MainPlatformStore(session_factory=session_factory)
@@ -321,13 +321,6 @@ def create_app(
     @fastapi_app.post("/v1/agent/run", response_model=AgentRunResponse)
     def run_agent_for_authenticated_user(request: Request) -> AgentRunResponse:
         user_id = _authenticated_user_id_from_request(request)
-        user = fastapi_app.state.main_store.get_user(user_id)
-        if user is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found for token subject",
-            )
-
         preferences = fastapi_app.state.main_store.get_preferences(user_id)
         if preferences is None or not preferences.interests:
             raise HTTPException(
@@ -342,19 +335,94 @@ def create_app(
                 detail="User resume not found",
             )
 
-        max_opportunities = min(max(preferences.applications_per_day, 1), 25)
-        agent_request = AgentRunRequest(
-            profile=CandidateProfile(
-                full_name=user.full_name,
-                email=user.email,
-                resume_text=resume.resume_text,
-                interests=preferences.interests,
-            ),
-            max_opportunities=max_opportunities,
-        )
-        applications = fastapi_app.state.agent.run(
-            user_id=user_id,
-            request=agent_request,
+        match_limit = min(max(preferences.applications_per_day, 1), 100)
+        poll_interval_seconds = float(os.getenv("AGENT_RUN_MATCH_POLL_INTERVAL_SECONDS", "0.5"))
+        poll_max_attempts = max(1, _parse_int_env("AGENT_RUN_MATCH_POLL_MAX_ATTEMPTS", 40))
+
+        try:
+            fastapi_app.state.cloud_client.run_discovery_now()
+        except CloudClientError:
+            logger.warning(
+                "agent_run_discovery_trigger_failed",
+                extra={"user_id": user_id},
+            )
+
+        try:
+            started = fastapi_app.state.orchestrator.start_match_run(
+                user_id=user_id,
+                payload=MatchRunStartRequest(
+                    limit=match_limit,
+                    location=preferences.locations[0] if preferences.locations else None,
+                    seniority=preferences.seniority,
+                ),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        except CloudClientError as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+        latest_status: MatchRunStatusResponse | None = None
+        for _ in range(poll_max_attempts):
+            try:
+                latest_status = fastapi_app.state.orchestrator.get_match_run(
+                    user_id=user_id,
+                    run_id=started.run_id,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+            except CloudClientError as exc:
+                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+            if latest_status.status in {
+                MatchRunStatus.completed,
+                MatchRunStatus.partial,
+                MatchRunStatus.failed,
+            }:
+                break
+            sleep(max(0.05, poll_interval_seconds))
+
+        if latest_status is None or latest_status.status not in {
+            MatchRunStatus.completed,
+            MatchRunStatus.partial,
+            MatchRunStatus.failed,
+        }:
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail="Timed out waiting for match run completion",
+            )
+
+        if latest_status.status == MatchRunStatus.failed:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=latest_status.error or "Match run failed",
+            )
+
+        now = datetime.utcnow()
+        applications: list[ApplicationRecord] = []
+        for match in latest_status.results:
+            record = ApplicationRecord(
+                id=str(uuid4()),
+                opportunity=Opportunity(
+                    id=match.external_job_id,
+                    title=match.title,
+                    company=match.company,
+                    url=match.apply_url,
+                    reason=f"{match.reason} (source={match.source}, score={match.score:.2f})",
+                    discovered_at=match.posted_at or now,
+                ),
+                status=ApplicationStatus.discovered,
+            )
+            applications.append(
+                fastapi_app.state.store.upsert_for_user(user_id, record)
+            )
+
+        logger.info(
+            "agent_run_completed_from_match_results",
+            extra={
+                "user_id": user_id,
+                "match_run_id": started.run_id,
+                "application_count": len(applications),
+            },
         )
         return AgentRunResponse(applications=applications)
 
@@ -429,7 +497,13 @@ def create_app(
         try:
             return fastapi_app.state.orchestrator.upsert_resume(user_id=user_id, payload=payload)
         except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+            detail = str(exc)
+            status_code = (
+                status.HTTP_404_NOT_FOUND
+                if detail == "User not found"
+                else status.HTTP_400_BAD_REQUEST
+            )
+            raise HTTPException(status_code=status_code, detail=detail) from exc
 
     @fastapi_app.get("/v1/users/{user_id}/resume", response_model=ResumeResponse)
     def get_resume(user_id: str) -> ResumeResponse:
