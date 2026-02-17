@@ -1,15 +1,22 @@
 "use client";
 
 import { ApolloProvider, useMutation, useQuery } from "@apollo/client";
+import { useState } from "react";
 
 import { Nav } from "@/components/Nav";
 import { APPLICATIONS, ME, RUN_AGENT } from "@/graphql/operations";
 import { getClient } from "@/lib/apollo";
+import { useRequireAuth } from "@/lib/useRequireAuth";
 
 function ApplicationsInner() {
-  const { data: meData } = useQuery(ME);
-  const { data, loading, refetch } = useQuery(APPLICATIONS);
+  const { isCheckingAuth, isAuthenticated } = useRequireAuth();
+  const [error, setError] = useState("");
+  const { data: meData } = useQuery(ME, { skip: !isAuthenticated });
+  const { data, loading, refetch } = useQuery(APPLICATIONS, { skip: !isAuthenticated });
   const [runAgent, { loading: running }] = useMutation(RUN_AGENT);
+
+  if (isCheckingAuth) return <p>Checking session...</p>;
+  if (!isAuthenticated) return <p>Redirecting to login...</p>;
 
   const apps = data?.applications ?? [];
 
@@ -28,13 +35,19 @@ function ApplicationsInner() {
         <button
           disabled={running}
           onClick={async () => {
-            await runAgent();
-            await refetch();
+            setError("");
+            try {
+              await runAgent();
+              await refetch();
+            } catch (err: unknown) {
+              setError(err instanceof Error ? err.message : "Could not run agent.");
+            }
           }}
           style={{ marginBottom: 14 }}
         >
           {running ? "Running agent..." : "Run agent now"}
         </button>
+        {error && <p style={{ color: "#fca5a5" }}>{error}</p>}
 
         {loading ? (
           <p>Loading applications...</p>

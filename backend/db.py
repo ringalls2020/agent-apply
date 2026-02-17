@@ -5,7 +5,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-DEFAULT_DATABASE_URL = "postgresql+psycopg://postgres:postgres@localhost:5432/agent_apply"
+DEFAULT_DATABASE_URL = "sqlite+pysqlite:///./agent_apply.db"
 
 
 class Base(DeclarativeBase):

@@ -2,27 +2,15 @@
 
 This repository includes:
 
-1. A FastAPI backend in `/backend` with PostgreSQL persistence.
+1. A FastAPI backend in `/backend` with SQL persistence (SQLite by default, PostgreSQL via `DATABASE_URL`).
 2. A Next.js + GraphQL frontend app in `/frontend`.
 
 ## Backend quick start
 
-Start PostgreSQL (example via Docker):
-
-```bash
-docker run --name agent-apply-postgres \
-  -e POSTGRES_DB=agent_apply \
-  -e POSTGRES_USER=postgres \
-  -e POSTGRES_PASSWORD=postgres \
-  -p 5432:5432 \
-  -d postgres:16
-```
-
-Configure backend environment:
+Create environment file (optional, for overrides):
 
 ```bash
 cp .env.example .env
-export DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/agent_apply
 ```
 
 Run backend:
@@ -33,6 +21,18 @@ source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn backend.main:app --reload
 ```
+
+Default local database:
+
+- `sqlite+pysqlite:///./agent_apply.db` (no PostgreSQL required)
+
+Use PostgreSQL instead (optional):
+
+```bash
+export DATABASE_URL=postgresql+psycopg://<db_user>:<db_password>@localhost:5432/agent_apply
+```
+
+If your local Postgres cluster doesn't have a `postgres` role, set `<db_user>` to an existing role (often your macOS username).
 
 Backend URLs:
 
@@ -75,4 +75,4 @@ Visit `http://localhost:3000`.
 
 - The Next.js app is fully functional with in-memory persistence suitable for local/demo use.
 - For production, move storage/session logic from `store.ts` to a durable datastore and hardened auth.
-- The FastAPI backend persists application records in PostgreSQL via `DATABASE_URL`.
+- The FastAPI backend defaults to a local SQLite file and can be pointed at PostgreSQL via `DATABASE_URL`.

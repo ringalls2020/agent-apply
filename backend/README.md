@@ -9,7 +9,10 @@ The backend is a FastAPI service that simulates a job-application automation pip
 3. Enrich each record with a recruiter contact.
 4. Mark the record as "notified".
 
-Application records are now persisted in PostgreSQL.
+Application records are persisted in SQL via SQLAlchemy:
+
+- default local runtime: SQLite (`agent_apply.db`)
+- optional external runtime: PostgreSQL (`DATABASE_URL`)
 
 ## 2. Technology Stack
 
@@ -17,7 +20,7 @@ Application records are now persisted in PostgreSQL.
 - FastAPI (`fastapi==0.115.0`)
 - Pydantic v2 (`pydantic==2.8.2`)
 - SQLAlchemy (`sqlalchemy==2.0.36`)
-- Psycopg v3 (`psycopg[binary]==3.2.3`)
+- Psycopg v3 (`psycopg==3.2.3`)
 - Uvicorn (`uvicorn==0.30.6`)
 - Jinja2 (`jinja2==3.1.4`)
 - Pytest + HTTPX (`pytest==8.3.3`, `httpx==0.27.2`)
@@ -45,35 +48,29 @@ tests/
 
 Environment variables:
 
-- `DATABASE_URL` (recommended for explicit configuration)
-  - Example: `postgresql+psycopg://postgres:postgres@localhost:5432/agent_apply`
+- `DATABASE_URL` (optional override)
+  - PostgreSQL example: `postgresql+psycopg://<db_user>:<db_password>@localhost:5432/agent_apply`
+  - SQLite example: `sqlite+pysqlite:///./agent_apply.db`
 
 Default fallback when `DATABASE_URL` is not set:
 
-- `postgresql+psycopg://postgres:postgres@localhost:5432/agent_apply`
+- `sqlite+pysqlite:///./agent_apply.db`
 
 ## 5. Local Setup and Run
 
 From repository root (`/Users/riza/dev-projects/agent-apply`):
 
-1. Start PostgreSQL (example with Docker):
+1. (Optional) Set `DATABASE_URL` for PostgreSQL:
 
 ```bash
-docker run --name agent-apply-postgres \
-  -e POSTGRES_DB=agent_apply \
-  -e POSTGRES_USER=postgres \
-  -e POSTGRES_PASSWORD=postgres \
-  -p 5432:5432 \
-  -d postgres:16
+export DATABASE_URL=postgresql+psycopg://<db_user>:<db_password>@localhost:5432/agent_apply
 ```
 
-2. Set database URL:
+If your local Postgres instance doesn't include a `postgres` role, use an existing role name (often your macOS username) as `<db_user>`.
 
-```bash
-export DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/agent_apply
-```
+You can also skip this step and use the default SQLite database.
 
-3. Start the API:
+2. Start the API:
 
 ```bash
 python3 -m venv .venv
@@ -194,7 +191,7 @@ python3 -m pytest -q
 Test behavior:
 
 - API and service tests run against an in-memory SQLite database.
-- Production/local runtime uses PostgreSQL through `DATABASE_URL`.
+- Local runtime defaults to SQLite and can use PostgreSQL through `DATABASE_URL`.
 
 ## 9. Operational Limitations (Current Prototype)
 
