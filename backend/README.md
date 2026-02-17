@@ -9,13 +9,15 @@ The backend is a FastAPI service that simulates a job-application automation pip
 3. Enrich each record with a recruiter contact.
 4. Mark the record as "notified".
 
-Current implementation is intentionally deterministic and in-memory for local development and demos.
+Application records are now persisted in PostgreSQL.
 
 ## 2. Technology Stack
 
 - Python
 - FastAPI (`fastapi==0.115.0`)
 - Pydantic v2 (`pydantic==2.8.2`)
+- SQLAlchemy (`sqlalchemy==2.0.36`)
+- Psycopg v3 (`psycopg[binary]==3.2.3`)
 - Uvicorn (`uvicorn==0.30.6`)
 - Jinja2 (`jinja2==3.1.4`)
 - Pytest + HTTPX (`pytest==8.3.3`, `httpx==0.27.2`)
@@ -28,7 +30,9 @@ Dependencies are pinned in `requirements.txt`.
 backend/
   main.py                  # FastAPI app factory + HTTP routes
   models.py                # Pydantic request/response/domain models
-  services.py              # InMemoryStore + OpportunityAgent pipeline
+  db.py                    # Engine/session factory + DATABASE_URL resolution
+  db_models.py             # SQLAlchemy ORM table definitions
+  services.py              # PostgresStore + OpportunityAgent pipeline
   templates/
     dashboard.html         # Admin dashboard rendered by /admin
 
@@ -37,9 +41,39 @@ tests/
   test_services.py         # Store + agent pipeline unit tests
 ```
 
-## 4. Local Setup and Run
+## 4. Configuration
+
+Environment variables:
+
+- `DATABASE_URL` (recommended for explicit configuration)
+  - Example: `postgresql+psycopg://postgres:postgres@localhost:5432/agent_apply`
+
+Default fallback when `DATABASE_URL` is not set:
+
+- `postgresql+psycopg://postgres:postgres@localhost:5432/agent_apply`
+
+## 5. Local Setup and Run
 
 From repository root (`/Users/riza/dev-projects/agent-apply`):
+
+1. Start PostgreSQL (example with Docker):
+
+```bash
+docker run --name agent-apply-postgres \
+  -e POSTGRES_DB=agent_apply \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_PASSWORD=postgres \
+  -p 5432:5432 \
+  -d postgres:16
+```
+
+2. Set database URL:
+
+```bash
+export DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/agent_apply
+```
+
+3. Start the API:
 
 ```bash
 python3 -m venv .venv
@@ -53,28 +87,32 @@ Server defaults:
 - Base URL: `http://127.0.0.1:8000`
 - Swagger UI: `http://127.0.0.1:8000/docs`
 - ReDoc: `http://127.0.0.1:8000/redoc`
+- Admin dashboard: `http://127.0.0.1:8000/admin`
 
-## 5. Architecture and Runtime Behavior
+## 6. Architecture and Runtime Behavior
 
-### 5.1 App initialization
+### 6.1 App initialization
 
 `create_app()` in `backend/main.py`:
 
-- Creates a FastAPI app.
-- Attaches `InMemoryStore` to `app.state.store`.
+- Resolves database URL from argument/env.
+- Creates SQLAlchemy engine and session factory.
+- On startup, creates database tables if they do not exist.
+- Attaches `PostgresStore` to `app.state.store`.
 - Attaches `OpportunityAgent` to `app.state.agent`.
-- Registers REST endpoints and admin HTML route.
+- Disposes the DB engine on app shutdown.
 
-### 5.2 State model
+### 6.2 Persistence model
 
-Persistence is in-process memory only:
+`PostgresStore` persists each `ApplicationRecord` in the `applications` table with relational columns for:
 
-- `InMemoryStore.applications` is a `Dict[str, ApplicationRecord]`.
-- Restarting the process clears all data.
-- `upsert()` overwrites records by application ID.
-- `list_all()` returns records sorted by `opportunity.discovered_at` descending.
+- Core status/timestamps
+- Opportunity fields (`id`, `title`, `company`, `url`, `reason`, `discovered_at`)
+- Contact fields (`name`, `email`, `role`, `source`)
 
-### 5.3 Agent pipeline
+`list_all()` returns records sorted by `opportunity_discovered_at` descending.
+
+### 6.3 Agent pipeline
 
 `OpportunityAgent.run()` executes:
 
@@ -86,13 +124,13 @@ Persistence is in-process memory only:
 4. `_notify(record)` sets:
    - status `notified`
    - `notified_at` timestamp
-5. Final record is stored via `store.upsert(record)`.
+5. Final record is written through `store.upsert(record)`.
 
 Returned API records are already in `notified` state for this prototype.
 
-## 6. API Reference
+## 7. API Reference
 
-### 6.1 GET `/health`
+### 7.1 GET `/health`
 
 Health probe endpoint.
 
@@ -104,7 +142,7 @@ Response:
 }
 ```
 
-### 6.2 POST `/agent/run`
+### 7.2 POST `/agent/run`
 
 Runs the full discovery -> apply -> enrich -> notify pipeline and returns generated application records.
 
@@ -127,40 +165,7 @@ Validation rules:
 - `profile.interests` must contain at least 1 item.
 - `max_opportunities` must be between 1 and 25 (inclusive).
 
-Successful response (`AgentRunResponse`) shape:
-
-```json
-{
-  "applications": [
-    {
-      "id": "application-uuid",
-      "opportunity": {
-        "id": "opportunity-uuid",
-        "title": "Ai Fellow",
-        "company": "Novel Labs 1",
-        "url": "https://example.com/jobs/1",
-        "reason": "Matched resume with interests (ai, climate) and found a novel role with high skills overlap.",
-        "discovered_at": "2026-02-17T18:00:00.000000"
-      },
-      "status": "notified",
-      "contact": {
-        "name": "Recruiter for Novel Labs 1",
-        "email": "recruiting@novellabs1.com",
-        "role": "Talent Acquisition",
-        "source": "Company careers page"
-      },
-      "submitted_at": "2026-02-17T18:00:01.000000",
-      "notified_at": "2026-02-17T18:00:02.000000"
-    }
-  ]
-}
-```
-
-Failure mode:
-
-- `422 Unprocessable Entity` for validation errors (for example, empty `interests`).
-
-### 6.3 GET `/applications`
+### 7.3 GET `/applications`
 
 Returns all stored application records in descending `discovered_at` order.
 
@@ -168,7 +173,7 @@ Response schema:
 
 - `AgentRunResponse` (`{"applications": [...]}`)
 
-### 6.4 GET `/admin`
+### 7.4 GET `/admin`
 
 Renders an HTML dashboard (`backend/templates/dashboard.html`) with:
 
@@ -178,56 +183,6 @@ Renders an HTML dashboard (`backend/templates/dashboard.html`) with:
   - Notified (records where `notified_at` exists)
 - Table of application records and contact details.
 
-## 7. Data Model Reference
-
-Defined in `backend/models.py`.
-
-### 7.1 Enums
-
-- `ApplicationStatus`
-  - `discovered`
-  - `applied`
-  - `notified`
-
-### 7.2 Domain models
-
-- `Opportunity`
-  - `id: str`
-  - `title: str`
-  - `company: str`
-  - `url: str`
-  - `reason: str`
-  - `discovered_at: datetime` (auto defaults to current UTC time)
-
-- `Contact`
-  - `name: str`
-  - `email: str`
-  - `role: Optional[str]`
-  - `source: str`
-
-- `ApplicationRecord`
-  - `id: str`
-  - `opportunity: Opportunity`
-  - `status: ApplicationStatus`
-  - `contact: Optional[Contact]`
-  - `submitted_at: Optional[datetime]`
-  - `notified_at: Optional[datetime]`
-
-### 7.3 API models
-
-- `CandidateProfile`
-  - `full_name: str`
-  - `email: str`
-  - `resume_text: str`
-  - `interests: List[str]` (minimum length 1)
-
-- `AgentRunRequest`
-  - `profile: CandidateProfile`
-  - `max_opportunities: int` (default 5, min 1, max 25)
-
-- `AgentRunResponse`
-  - `applications: List[ApplicationRecord]`
-
 ## 8. Testing
 
 Run from repository root:
@@ -236,30 +191,22 @@ Run from repository root:
 python3 -m pytest -q
 ```
 
-Test coverage includes:
+Test behavior:
 
-- API health endpoint behavior.
-- End-to-end agent run plus list retrieval.
-- Validation rejection for empty `interests`.
-- Admin dashboard rendering and stats markers.
-- Store sorting by discovery timestamp.
-- Agent pipeline completion (submitted/notified/contact fields).
-- Discovery title generation that rotates through interests.
+- API and service tests run against an in-memory SQLite database.
+- Production/local runtime uses PostgreSQL through `DATABASE_URL`.
 
 ## 9. Operational Limitations (Current Prototype)
 
-- No durable datastore (memory only).
-- No authentication or authorization.
-- No request rate limiting.
+- No auth or route-level authorization.
 - No background job queue; all processing is synchronous in request cycle.
 - No external provider integrations (search, application automation, contact enrichment, notifications are mocked).
 - No structured logging, tracing, or metrics export.
+- No migration tool configured yet (schema currently created with SQLAlchemy `create_all`).
 
 ## 10. Productionization Checklist
 
-To evolve this backend into production:
-
-1. Replace `InMemoryStore` with a persistent database repository (PostgreSQL recommended).
+1. Add schema migrations (Alembic) and versioned database changes.
 2. Add authentication and route-level authorization.
 3. Move pipeline execution to asynchronous workers (e.g., Celery/RQ/Temporal).
 4. Integrate real providers in place of `_discover`, `_apply`, `_find_point_of_contact`, `_notify`.

@@ -18,6 +18,7 @@ export function Nav() {
         <button
           onClick={() => {
             localStorage.removeItem("agent_apply_token");
+            document.cookie = "agent_apply_token=; Path=/; Max-Age=0; SameSite=Lax";
             router.push("/login");
           }}
         >

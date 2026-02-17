@@ -22,12 +22,27 @@ export type ApplicationRecord = {
   submittedAt: string;
 };
 
-const db = {
+type StoreState = {
+  users: Map<string, UserRecord>;
+  emailToUserId: Map<string, string>;
+  sessions: Map<string, string>;
+  applications: ApplicationRecord[];
+};
+
+const createStore = (): StoreState => ({
   users: new Map<string, UserRecord>(),
   emailToUserId: new Map<string, string>(),
   sessions: new Map<string, string>(),
   applications: [] as ApplicationRecord[],
-};
+});
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __agentApplyStore: StoreState | undefined;
+}
+
+const db = globalThis.__agentApplyStore ?? createStore();
+globalThis.__agentApplyStore = db;
 
 const hashPassword = (password: string) =>
   crypto.createHash("sha256").update(password).digest("hex");
@@ -82,26 +97,26 @@ export function requireUser(token?: string | null): UserRecord {
   return user;
 }
 
-export function updatePreferences(token: string, interests: string[], applicationsPerDay: number): UserRecord {
+export function updatePreferences(token: string | null, interests: string[], applicationsPerDay: number): UserRecord {
   const user = requireUser(token);
   user.interests = interests;
   user.applicationsPerDay = applicationsPerDay;
   return user;
 }
 
-export function updateResume(token: string, filename: string, text: string): UserRecord {
+export function updateResume(token: string | null, filename: string, text: string): UserRecord {
   const user = requireUser(token);
   user.resumeFilename = filename;
   user.resumeText = text;
   return user;
 }
 
-export function getApplications(token: string): ApplicationRecord[] {
+export function getApplications(token: string | null): ApplicationRecord[] {
   const user = requireUser(token);
   return db.applications.filter((item) => item.userId === user.id);
 }
 
-export function generateApplications(token: string): ApplicationRecord[] {
+export function generateApplications(token: string | null): ApplicationRecord[] {
   const user = requireUser(token);
   const created: ApplicationRecord[] = [];
 

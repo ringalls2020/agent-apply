@@ -31,7 +31,9 @@ function SignupInner() {
           setError("");
           try {
             const result = await signup({ variables: { name, email, password } });
-            localStorage.setItem("agent_apply_token", result.data.signup.token);
+            const token = result.data.signup.token;
+            localStorage.setItem("agent_apply_token", token);
+            document.cookie = `agent_apply_token=${encodeURIComponent(token)}; Path=/; SameSite=Lax`;
             router.push("/applications");
           } catch (err: unknown) {
             setError(err instanceof Error ? err.message : "Could not sign up.");

@@ -10,6 +10,10 @@ import {
   updateResume,
 } from "@/lib/store";
 
+type GraphQLContext = {
+  token: string | null;
+};
+
 const typeDefs = /* GraphQL */ `
   type User {
     id: ID!
@@ -54,28 +58,48 @@ const schema = createSchema({
   typeDefs,
   resolvers: {
     Query: {
-      me: (_root, _args, ctx) => requireUser(ctx.token),
-      applications: (_root, _args, ctx) => getApplications(ctx.token),
+      me: (_root, _args, ctx: GraphQLContext) => requireUser(ctx.token),
+      applications: (_root, _args, ctx: GraphQLContext) => getApplications(ctx.token),
     },
     Mutation: {
       signup: (_root, args) => signup(args.name, args.email, args.password),
       login: (_root, args) => login(args.email, args.password),
-      updatePreferences: (_root, args, ctx) => updatePreferences(ctx.token, args.interests, args.applicationsPerDay),
-      uploadResume: (_root, args, ctx) => updateResume(ctx.token, args.filename, args.text),
-      runAgent: (_root, _args, ctx) => generateApplications(ctx.token),
+      updatePreferences: (_root, args, ctx: GraphQLContext) =>
+        updatePreferences(ctx.token, args.interests, args.applicationsPerDay),
+      uploadResume: (_root, args, ctx: GraphQLContext) => updateResume(ctx.token, args.filename, args.text),
+      runAgent: (_root, _args, ctx: GraphQLContext) => generateApplications(ctx.token),
     },
   },
 });
 
-const yoga = createYoga<{ token: string | null }>({
+function getTokenFromRequest(request: Request): string | null {
+  const authHeader = request.headers.get("authorization");
+  if (authHeader) {
+    const bearerMatch = authHeader.match(/^Bearer\s+(.+)$/i);
+    if (bearerMatch?.[1]) return bearerMatch[1].trim();
+  }
+
+  const cookieHeader = request.headers.get("cookie");
+  if (!cookieHeader) return null;
+
+  const tokenCookie = cookieHeader
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith("agent_apply_token="));
+
+  if (!tokenCookie) return null;
+  const [, token = ""] = tokenCookie.split("=");
+  return token ? decodeURIComponent(token) : null;
+}
+
+const yoga = createYoga<GraphQLContext>({
   graphqlEndpoint: "/api/graphql",
   schema,
-  context: async ({ request }) => {
-    const auth = request.headers.get("authorization");
-    const token = auth?.startsWith("Bearer ") ? auth.replace("Bearer ", "") : null;
-    return { token };
-  },
   fetchAPI: { Response },
 });
 
-export { yoga as GET, yoga as POST };
+async function handleGraphQL(request: Request): Promise<Response> {
+  return yoga.handleRequest(request, { token: getTokenFromRequest(request) });
+}
+
+export { handleGraphQL as GET, handleGraphQL as POST };
