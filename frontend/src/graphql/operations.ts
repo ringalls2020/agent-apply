@@ -35,6 +35,7 @@ export const ME = gql`
       interests
       applicationsPerDay
       resumeFilename
+      autosubmitEnabled
     }
   }
 `;
@@ -68,6 +69,7 @@ export const APPLICATIONS = gql`
       contactName
       contactEmail
       submittedAt
+      jobUrl
     }
   }
 `;
@@ -77,6 +79,74 @@ export const RUN_AGENT = gql`
     runAgent {
       id
       title
+      status
+      jobUrl
+    }
+  }
+`;
+
+export const PROFILE = gql`
+  query Profile {
+    profile {
+      autosubmitEnabled
+      phone
+      city
+      state
+      country
+      linkedinUrl
+      githubUrl
+      portfolioUrl
+      workAuthorization
+      requiresSponsorship
+      willingToRelocate
+      yearsExperience
+      writingVoice
+      coverLetterStyle
+      achievementsSummary
+      additionalContext
+      customAnswers {
+        questionKey
+        answer
+      }
+      sensitive {
+        gender
+        raceEthnicity
+        veteranStatus
+        disabilityStatus
+      }
+    }
+  }
+`;
+
+export const UPDATE_PROFILE = gql`
+  mutation UpdateProfile($input: ApplicationProfileInput!) {
+    updateProfile(input: $input) {
+      autosubmitEnabled
+      phone
+      city
+      state
+      country
+      linkedinUrl
+      githubUrl
+      portfolioUrl
+      workAuthorization
+      requiresSponsorship
+      willingToRelocate
+      yearsExperience
+      writingVoice
+      coverLetterStyle
+      achievementsSummary
+      additionalContext
+      customAnswers {
+        questionKey
+        answer
+      }
+      sensitive {
+        gender
+        raceEthnicity
+        veteranStatus
+        disabilityStatus
+      }
     }
   }
 `;

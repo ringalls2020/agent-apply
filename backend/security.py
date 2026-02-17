@@ -4,9 +4,13 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import secrets
+from functools import lru_cache
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
+
+from cryptography.fernet import Fernet, InvalidToken
 
 
 class SecurityError(ValueError):
@@ -143,3 +147,52 @@ def verify_body_signature(
 
 def sha256_hex(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def _fernet_from_secret(secret: str) -> Fernet:
+    raw = secret.strip().encode("utf-8")
+    if not raw:
+        raise SecurityError("USER_PROFILE_ENCRYPTION_KEY is required")
+
+    # Accept either a pre-generated Fernet key or a passphrase-like secret.
+    try:
+        return Fernet(raw)
+    except Exception:
+        derived = base64.urlsafe_b64encode(hashlib.sha256(raw).digest())
+        return Fernet(derived)
+
+
+def _profile_encryption_secret() -> str:
+    return os.getenv("USER_PROFILE_ENCRYPTION_KEY", "").strip()
+
+
+@lru_cache(maxsize=1)
+def _profile_fernet() -> Fernet:
+    secret = _profile_encryption_secret()
+    if not secret:
+        raise SecurityError("USER_PROFILE_ENCRYPTION_KEY is required")
+    return _fernet_from_secret(secret)
+
+
+def validate_profile_encryption_config(*, required: bool) -> None:
+    secret = _profile_encryption_secret()
+    if not secret:
+        if required:
+            raise SecurityError("USER_PROFILE_ENCRYPTION_KEY is required")
+        return
+    _fernet_from_secret(secret)
+
+
+def encrypt_sensitive_text(value: str) -> str:
+    if value == "":
+        return ""
+    return _profile_fernet().encrypt(value.encode("utf-8")).decode("utf-8")
+
+
+def decrypt_sensitive_text(value: str) -> str:
+    if value == "":
+        return ""
+    try:
+        return _profile_fernet().decrypt(value.encode("utf-8")).decode("utf-8")
+    except InvalidToken as exc:
+        raise SecurityError("Failed to decrypt sensitive profile field") from exc

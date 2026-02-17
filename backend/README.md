@@ -36,6 +36,8 @@ Legacy demo endpoints (`/agent/run`, `/applications`, `/admin`) are still presen
 - `GET /v1/users/{user_id}/preferences`
 - `PUT /v1/users/{user_id}/resume`
 - `GET /v1/users/{user_id}/resume`
+- `PUT /v1/users/{user_id}/profile`
+- `GET /v1/users/{user_id}/profile`
 
 ### Cloud orchestration
 
@@ -51,6 +53,7 @@ Legacy demo endpoints (`/agent/run`, `/applications`, `/admin`) are still presen
 
 `POST /v1/agent/run` triggers cloud discovery + matching and persists results per user.
 To avoid synthetic fallback listings, set `USE_ONLY_LIVE_ADAPTERS=true` in the cloud automation env and configure live adapter seed variables.
+When `autosubmit_enabled=true` in the user profile, `/v1/agent/run` also starts async apply runs and application statuses progress via callback updates.
 
 Legacy routes `/agent/run` and `/applications` now return `410 Gone`.
 
@@ -106,6 +109,7 @@ Callback requirements:
 - `USER_AUTH_ISSUER` (default: `main-api`)
 - `USER_AUTH_AUDIENCE` (default: `agent-apply-frontend`)
 - `USER_AUTH_TOKEN_TTL_SECONDS` (default: `604800`)
+- `USER_PROFILE_ENCRYPTION_KEY` (required outside dev/test to encrypt sensitive profile fields)
 
 ## Local run
 

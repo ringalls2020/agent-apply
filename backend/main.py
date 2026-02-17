@@ -3,7 +3,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter, sleep
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
@@ -23,6 +23,8 @@ from .logging_config import (
     reset_request_logging_context,
 )
 from .models import (
+    ApplicationProfileResponse,
+    ApplicationProfileUpsertRequest,
     ApplicationRecord,
     ApplicationStatus,
     AgentRunResponse,
@@ -34,6 +36,7 @@ from .models import (
     ApplyRunStartRequest,
     ApplyRunStartResponse,
     ApplyRunStatusResponse,
+    ApplyTargetJob,
     CallbackAckResponse,
     MatchRunStartRequest,
     MatchRunStartResponse,
@@ -51,6 +54,7 @@ from .security import (
     SecurityError,
     create_hs256_jwt,
     hash_password,
+    validate_profile_encryption_config,
     verify_body_signature,
     verify_hs256_jwt,
 )
@@ -96,6 +100,9 @@ def create_app(
     cloud_client: CloudAutomationClient | None = None,
 ) -> FastAPI:
     configure_logging()
+    app_env = os.getenv("APP_ENV", os.getenv("ENV", "development")).strip().lower()
+    require_profile_encryption = app_env not in {"dev", "development", "local", "test"}
+    validate_profile_encryption_config(required=require_profile_encryption)
     resolved_database_url = get_database_url(database_url)
     logger.info(
         "app_initializing",
@@ -116,6 +123,7 @@ def create_app(
     fastapi_app.state.orchestrator = CloudOrchestrationService(
         store=fastapi_app.state.main_store,
         cloud_client=fastapi_app.state.cloud_client,
+        application_store=fastapi_app.state.store,
         default_daily_cap=_parse_int_env("DEFAULT_APPLY_DAILY_CAP", 25),
     )
 
@@ -187,6 +195,7 @@ def create_app(
             )
         preferences = fastapi_app.state.main_store.get_preferences(user_id)
         resume = fastapi_app.state.main_store.get_resume(user_id)
+        profile = fastapi_app.state.main_store.get_application_profile(user_id)
         return AuthUserProfile(
             id=user.id,
             full_name=user.full_name,
@@ -194,7 +203,16 @@ def create_app(
             interests=preferences.interests if preferences else [],
             applications_per_day=preferences.applications_per_day if preferences else 25,
             resume_filename=resume.filename if resume else None,
+            autosubmit_enabled=profile.autosubmit_enabled if profile else False,
         )
+
+    def _authenticated_user_id_must_match(request: Request, user_id: str) -> None:
+        authenticated_user_id = _authenticated_user_id_from_request(request)
+        if authenticated_user_id != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Cannot access another user's profile",
+            )
 
     @fastapi_app.middleware("http")
     async def request_logging_middleware(request: Request, call_next):
@@ -334,6 +352,8 @@ def create_app(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="User resume not found",
             )
+        profile = fastapi_app.state.main_store.get_application_profile(user_id)
+        autosubmit_enabled = profile.autosubmit_enabled if profile else False
 
         match_limit = min(max(preferences.applications_per_day, 1), 100)
         poll_interval_seconds = float(os.getenv("AGENT_RUN_MATCH_POLL_INTERVAL_SECONDS", "0.5"))
@@ -401,7 +421,7 @@ def create_app(
         applications: list[ApplicationRecord] = []
         for match in latest_status.results:
             record = ApplicationRecord(
-                id=str(uuid4()),
+                id=str(uuid5(NAMESPACE_URL, f"{user_id}:{match.external_job_id}")),
                 opportunity=Opportunity(
                     id=match.external_job_id,
                     title=match.title,
@@ -410,11 +430,42 @@ def create_app(
                     reason=f"{match.reason} (source={match.source}, score={match.score:.2f})",
                     discovered_at=match.posted_at or now,
                 ),
-                status=ApplicationStatus.discovered,
+                status=(
+                    ApplicationStatus.applying
+                    if autosubmit_enabled
+                    else ApplicationStatus.review
+                ),
             )
             applications.append(
                 fastapi_app.state.store.upsert_for_user(user_id, record)
             )
+
+        jobs_to_apply = [
+            item
+            for item in applications
+            if item.status == ApplicationStatus.applying
+        ]
+
+        if autosubmit_enabled and jobs_to_apply:
+            try:
+                fastapi_app.state.orchestrator.start_apply_run(
+                    user_id=user_id,
+                    payload=ApplyRunStartRequest(
+                        jobs=[
+                            ApplyTargetJob(
+                                external_job_id=item.opportunity.id,
+                                title=item.opportunity.title,
+                                company=item.opportunity.company,
+                                apply_url=item.opportunity.url,
+                            )
+                            for item in jobs_to_apply
+                        ]
+                    ),
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+            except CloudClientError as exc:
+                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
         logger.info(
             "agent_run_completed_from_match_results",
@@ -422,6 +473,7 @@ def create_app(
                 "user_id": user_id,
                 "match_run_id": started.run_id,
                 "application_count": len(applications),
+                "autosubmit_enabled": autosubmit_enabled,
             },
         )
         return AgentRunResponse(applications=applications)
@@ -514,6 +566,35 @@ def create_app(
                 detail="Resume not found",
             )
         return resume
+
+    @fastapi_app.put(
+        "/v1/users/{user_id}/profile",
+        response_model=ApplicationProfileResponse,
+    )
+    def upsert_application_profile(
+        user_id: str,
+        payload: ApplicationProfileUpsertRequest,
+        request: Request,
+    ) -> ApplicationProfileResponse:
+        _authenticated_user_id_must_match(request, user_id)
+        try:
+            return fastapi_app.state.orchestrator.upsert_application_profile(
+                user_id=user_id,
+                payload=payload,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    @fastapi_app.get(
+        "/v1/users/{user_id}/profile",
+        response_model=ApplicationProfileResponse,
+    )
+    def get_application_profile(user_id: str, request: Request) -> ApplicationProfileResponse:
+        _authenticated_user_id_must_match(request, user_id)
+        profile = fastapi_app.state.orchestrator.get_application_profile(user_id)
+        if profile is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
+        return profile
 
     @fastapi_app.post("/v1/users/{user_id}/match-runs", response_model=MatchRunStartResponse)
     def start_match_run(user_id: str, payload: MatchRunStartRequest) -> MatchRunStartResponse:

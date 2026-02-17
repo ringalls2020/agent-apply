@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -69,6 +70,47 @@ class UserPreferenceRow(Base):
     locations_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     seniority: Mapped[str | None] = mapped_column(String(64))
     applications_per_day: Mapped[int] = mapped_column(Integer, nullable=False, default=25)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow
+    )
+
+
+class UserApplicationProfileRow(Base):
+    __tablename__ = "user_application_profiles"
+
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id"), primary_key=True
+    )
+    autosubmit_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    phone: Mapped[str | None] = mapped_column(String(64))
+    city: Mapped[str | None] = mapped_column(String(128))
+    state: Mapped[str | None] = mapped_column(String(128))
+    country: Mapped[str | None] = mapped_column(String(128))
+
+    linkedin_url: Mapped[str | None] = mapped_column(Text)
+    github_url: Mapped[str | None] = mapped_column(Text)
+    portfolio_url: Mapped[str | None] = mapped_column(Text)
+
+    work_authorization: Mapped[str | None] = mapped_column(String(128))
+    requires_sponsorship: Mapped[bool | None] = mapped_column(Boolean)
+    willing_to_relocate: Mapped[bool | None] = mapped_column(Boolean)
+    years_experience: Mapped[int | None] = mapped_column(Integer)
+
+    writing_voice: Mapped[str | None] = mapped_column(String(64))
+    cover_letter_style: Mapped[str | None] = mapped_column(String(64))
+    achievements_summary: Mapped[str | None] = mapped_column(Text)
+    custom_answers_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    additional_context: Mapped[str | None] = mapped_column(Text)
+
+    gender_encrypted: Mapped[str | None] = mapped_column(Text)
+    race_ethnicity_encrypted: Mapped[str | None] = mapped_column(Text)
+    veteran_status_encrypted: Mapped[str | None] = mapped_column(Text)
+    disability_status_encrypted: Mapped[str | None] = mapped_column(Text)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow
     )

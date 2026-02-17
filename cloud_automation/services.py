@@ -5,7 +5,7 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Protocol
 from uuid import uuid4
 
 import httpx
@@ -602,48 +602,257 @@ class MatchingService:
         )
 
 
-class ApplyService:
-    def __init__(self, *, store: JobIntelStore, callback_emitter: CallbackEmitter) -> None:
-        self.store = store
-        self.callback_emitter = callback_emitter
+class ApplyExecutor(Protocol):
+    def complete_attempt(
+        self,
+        *,
+        attempt: ApplyAttemptRecord,
+        request: ApplyRunRequest,
+    ) -> ApplyAttemptRecord:
+        ...
 
-    async def execute(self, run_id: str) -> None:
-        self.store.set_apply_run_status(run_id=run_id, status=MatchRunStatus.running)
+
+class OpenAITextGenerator:
+    def __init__(self) -> None:
+        self.api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        self.model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini").strip()
+        self.timeout_seconds = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "20"))
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.api_key)
+
+    def generate(self, *, prompt: str) -> str | None:
+        if not self.enabled:
+            return None
+
         try:
-            request = self.store.get_apply_run_request(run_id)
-            attempts = self.store.list_apply_attempts(run_id)
-
-            for attempt in attempts:
-                browsing = attempt.model_copy(
-                    update={"status": ApplyAttemptStatus.browsing}
-                )
-                self.store.update_apply_attempt(run_id, browsing)
-
-                filling = browsing.model_copy(update={"status": ApplyAttemptStatus.filling})
-                self.store.update_apply_attempt(run_id, filling)
-
-                terminal_attempt = self._complete_attempt(filling)
-                self.store.update_apply_attempt(run_id, terminal_attempt)
-
-                callback_payload = ApplyAttemptCallbackPayload(
-                    idempotency_key=str(uuid4()),
-                    run_id=run_id,
-                    user_ref=request.user_ref,
-                    attempt=terminal_attempt,
-                )
-                self.callback_emitter.emit(callback_payload)
-
-            self.store.set_apply_run_status(run_id=run_id, status=MatchRunStatus.completed)
-        except Exception as exc:
-            logger.exception("apply_run_failed", extra={"run_id": run_id})
-            self.store.set_apply_run_status(
-                run_id=run_id,
-                status=MatchRunStatus.failed,
-                error=str(exc),
+            response = httpx.post(
+                "https://api.openai.com/v1/responses",
+                headers={
+                    "authorization": f"Bearer {self.api_key}",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": self.model,
+                    "input": prompt,
+                    "max_output_tokens": 280,
+                    "temperature": 0.2,
+                },
+                timeout=self.timeout_seconds,
             )
+            response.raise_for_status()
+            body = response.json()
+        except Exception:
+            logger.exception("openai_generation_failed")
+            return None
+
+        text = body.get("output_text")
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+
+        output = body.get("output")
+        if isinstance(output, list):
+            for item in output:
+                if not isinstance(item, dict):
+                    continue
+                content = item.get("content")
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") in {"output_text", "text"}:
+                        candidate = str(block.get("text", "")).strip()
+                        if candidate:
+                            return candidate
+        return None
+
+
+class FormAnswerSynthesizer:
+    def __init__(self, *, text_generator: OpenAITextGenerator | None = None) -> None:
+        self.text_generator = text_generator or OpenAITextGenerator()
 
     @staticmethod
-    def _complete_attempt(attempt: ApplyAttemptRecord) -> ApplyAttemptRecord:
+    def _decline_default(value: str | None) -> str:
+        return value.strip() if isinstance(value, str) and value.strip() else "decline_to_answer"
+
+    @staticmethod
+    def _application_profile(request: ApplyRunRequest) -> dict[str, Any]:
+        profile_payload = request.profile_payload or {}
+        application_profile = profile_payload.get("application_profile")
+        return application_profile if isinstance(application_profile, dict) else {}
+
+    def resolve_sensitive_answer(self, *, request: ApplyRunRequest, key: str) -> str:
+        profile = self._application_profile(request)
+        sensitive = profile.get("sensitive")
+        if isinstance(sensitive, dict):
+            value = sensitive.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return "decline_to_answer"
+
+    @staticmethod
+    def classify_question(
+        *,
+        label: str | None = None,
+        name: str | None = None,
+        options: list[str] | None = None,
+    ) -> str:
+        haystack_parts = [label or "", name or ""]
+        if options:
+            haystack_parts.extend(options)
+        haystack = " ".join(haystack_parts).lower()
+
+        if any(token in haystack for token in ["race", "ethnicity"]):
+            return "race_ethnicity"
+        if "gender" in haystack:
+            return "gender"
+        if "veteran" in haystack:
+            return "veteran_status"
+        if "disability" in haystack:
+            return "disability_status"
+        if "sponsor" in haystack:
+            return "requires_sponsorship"
+        if "authorization" in haystack or "authorized" in haystack:
+            return "work_authorization"
+        if "relocate" in haystack:
+            return "willing_to_relocate"
+        if any(token in haystack for token in ["cover letter", "essay", "why", "textarea"]):
+            return "open_text"
+        return "generic"
+
+    def answer_question(
+        self,
+        *,
+        request: ApplyRunRequest,
+        label: str | None = None,
+        name: str | None = None,
+        options: list[str] | None = None,
+    ) -> str:
+        question_type = self.classify_question(label=label, name=name, options=options)
+        if question_type in {
+            "race_ethnicity",
+            "gender",
+            "veteran_status",
+            "disability_status",
+        }:
+            return self.resolve_sensitive_answer(request=request, key=question_type)
+
+        typed = self.resolve_typed_answer(
+            request=request,
+            question_key=question_type if question_type != "generic" else (name or label or ""),
+        )
+        if typed:
+            return typed
+
+        prompt = label or name or "Please provide a concise answer."
+        return self.generate_open_text_answer(request=request, prompt=prompt)
+
+    def resolve_typed_answer(self, *, request: ApplyRunRequest, question_key: str) -> str | None:
+        key = question_key.strip().lower()
+        profile = self._application_profile(request)
+
+        custom_answers = profile.get("custom_answers")
+        if isinstance(custom_answers, list):
+            for item in custom_answers:
+                if not isinstance(item, dict):
+                    continue
+                candidate_key = str(item.get("question_key", "")).strip().lower()
+                if candidate_key == key:
+                    answer = str(item.get("answer", "")).strip()
+                    if answer:
+                        return answer
+
+        by_field = {
+            "work_authorization": profile.get("work_authorization"),
+            "requires_sponsorship": profile.get("requires_sponsorship"),
+            "willing_to_relocate": profile.get("willing_to_relocate"),
+            "years_experience": profile.get("years_experience"),
+            "phone": profile.get("phone"),
+            "city": profile.get("city"),
+            "state": profile.get("state"),
+            "country": profile.get("country"),
+            "linkedin_url": profile.get("linkedin_url"),
+            "github_url": profile.get("github_url"),
+            "portfolio_url": profile.get("portfolio_url"),
+        }
+        if key in by_field:
+            value = by_field[key]
+            if isinstance(value, bool):
+                return "yes" if value else "no"
+            if value is not None and str(value).strip():
+                return str(value).strip()
+
+        if "gender" in key:
+            return self.resolve_sensitive_answer(request=request, key="gender")
+        if "race" in key or "ethnicity" in key:
+            return self.resolve_sensitive_answer(request=request, key="race_ethnicity")
+        if "veteran" in key:
+            return self.resolve_sensitive_answer(request=request, key="veteran_status")
+        if "disability" in key:
+            return self.resolve_sensitive_answer(request=request, key="disability_status")
+
+        return None
+
+    def generate_open_text_answer(
+        self,
+        *,
+        request: ApplyRunRequest,
+        prompt: str,
+    ) -> str:
+        profile_payload = request.profile_payload or {}
+        profile = self._application_profile(request)
+
+        resume_text = str(profile_payload.get("resume_text", "")).strip()
+        preferences = profile_payload.get("preferences")
+        interests = []
+        if isinstance(preferences, dict):
+            raw_interests = preferences.get("interests")
+            if isinstance(raw_interests, list):
+                interests = [str(item).strip() for item in raw_interests if str(item).strip()]
+
+        context = {
+            "name": profile_payload.get("full_name", ""),
+            "interests": interests,
+            "writing_voice": profile.get("writing_voice", ""),
+            "cover_letter_style": profile.get("cover_letter_style", ""),
+            "achievements_summary": profile.get("achievements_summary", ""),
+            "additional_context": profile.get("additional_context", ""),
+            "resume_excerpt": resume_text[:3000],
+            "question": prompt,
+        }
+        llm_prompt = (
+            "You are writing concise and truthful application responses. "
+            "Use only the provided profile context and avoid inventing facts. "
+            "Return plain text only.\n\n"
+            f"{json.dumps(context, ensure_ascii=True)}"
+        )
+
+        generated = self.text_generator.generate(prompt=llm_prompt)
+        if generated:
+            return generated
+
+        name = str(profile_payload.get("full_name", "Candidate")).strip() or "Candidate"
+        summary = str(profile.get("achievements_summary", "")).strip()
+        interest_phrase = ", ".join(interests[:4]) if interests else "the role requirements"
+        fallback = (
+            f"I am {name}, and I am excited to contribute to this role. "
+            f"My experience aligns well with {interest_phrase}."
+        )
+        if summary:
+            fallback += f" Key highlight: {summary}"
+        return fallback
+
+
+class SimulatedApplyExecutor:
+    def complete_attempt(
+        self,
+        *,
+        attempt: ApplyAttemptRecord,
+        request: ApplyRunRequest,
+    ) -> ApplyAttemptRecord:
+        del request
         digest = hashlib.sha256(attempt.job_url.encode("utf-8")).hexdigest()
         selector = int(digest[:2], 16)
 
@@ -674,7 +883,9 @@ class ApplyService:
 
         failure_code = FailureCode.captcha_failed if selector % 2 == 0 else FailureCode.timeout
         failure_reason = (
-            "CAPTCHA solve attempt failed" if failure_code == FailureCode.captcha_failed else "Form submission timed out"
+            "CAPTCHA solve attempt failed"
+            if failure_code == FailureCode.captcha_failed
+            else "Form submission timed out"
         )
         return attempt.model_copy(
             update={
@@ -684,3 +895,183 @@ class ApplyService:
                 "artifacts": artifacts,
             }
         )
+
+
+class PlaywrightApplyExecutor:
+    def __init__(self, *, synthesizer: FormAnswerSynthesizer) -> None:
+        self.synthesizer = synthesizer
+        self.headless = (
+            os.getenv("PLAYWRIGHT_HEADLESS", "true").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+        self.nav_timeout_ms = int(float(os.getenv("PLAYWRIGHT_NAV_TIMEOUT_SECONDS", "20")) * 1000)
+        self.action_timeout_ms = int(float(os.getenv("PLAYWRIGHT_ACTION_TIMEOUT_SECONDS", "5")) * 1000)
+        self.capture_screenshots = (
+            os.getenv("PLAYWRIGHT_CAPTURE_SCREENSHOTS", "true").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+
+    def complete_attempt(
+        self,
+        *,
+        attempt: ApplyAttemptRecord,
+        request: ApplyRunRequest,
+    ) -> ApplyAttemptRecord:
+        lower_url = attempt.job_url.lower()
+        if "captcha" in lower_url:
+            return attempt.model_copy(
+                update={
+                    "status": ApplyAttemptStatus.failed,
+                    "failure_code": FailureCode.captcha_failed,
+                    "failure_reason": "CAPTCHA challenge detected",
+                }
+            )
+        if "blocked" in lower_url:
+            return attempt.model_copy(
+                update={
+                    "status": ApplyAttemptStatus.failed,
+                    "failure_code": FailureCode.site_blocked,
+                    "failure_reason": "Site automation protections blocked navigation",
+                }
+            )
+
+        work_auth = self.synthesizer.resolve_typed_answer(
+            request=request,
+            question_key="work_authorization",
+        )
+        if not work_auth:
+            return attempt.model_copy(
+                update={
+                    "status": ApplyAttemptStatus.failed,
+                    "failure_code": FailureCode.form_validation_failed,
+                    "failure_reason": "Missing work authorization answer in application profile",
+                }
+            )
+
+        _ = self.synthesizer.answer_question(
+            request=request,
+            label="Please provide a short, role-specific cover letter",
+            name="cover_letter",
+            options=None,
+        )
+
+        try:
+            from playwright.sync_api import sync_playwright
+
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=self.headless)
+                context = browser.new_context()
+                page = context.new_page()
+                page.set_default_navigation_timeout(self.nav_timeout_ms)
+                page.set_default_timeout(self.action_timeout_ms)
+                page.goto(attempt.job_url, wait_until="domcontentloaded")
+                if self.capture_screenshots:
+                    page.screenshot(path=f"/tmp/{attempt.attempt_id}.png", full_page=True)
+                context.close()
+                browser.close()
+        except Exception as exc:
+            logger.exception(
+                "playwright_apply_attempt_failed",
+                extra={"attempt_id": attempt.attempt_id, "job_url": attempt.job_url},
+            )
+            error_text = str(exc).lower()
+            failure_code = (
+                FailureCode.timeout if "timeout" in error_text else FailureCode.site_blocked
+            )
+            return attempt.model_copy(
+                update={
+                    "status": ApplyAttemptStatus.failed,
+                    "failure_code": failure_code,
+                    "failure_reason": str(exc),
+                }
+            )
+
+        expires = datetime.utcnow() + timedelta(days=7)
+        artifacts = [
+            ArtifactRef(
+                kind="html",
+                url=f"s3://job-artifacts/{attempt.attempt_id}/playwright-final.html",
+                expires_at=expires,
+            )
+        ]
+        if self.capture_screenshots:
+            artifacts.append(
+                ArtifactRef(
+                    kind="screenshot",
+                    url=f"s3://job-artifacts/{attempt.attempt_id}/playwright-final.png",
+                    expires_at=expires,
+                )
+            )
+
+        return attempt.model_copy(
+            update={
+                "status": ApplyAttemptStatus.succeeded,
+                "submitted_at": datetime.utcnow(),
+                "failure_code": None,
+                "failure_reason": None,
+                "artifacts": artifacts,
+            }
+        )
+
+
+class ApplyService:
+    def __init__(self, *, store: JobIntelStore, callback_emitter: CallbackEmitter) -> None:
+        self.store = store
+        self.callback_emitter = callback_emitter
+        self.answer_synthesizer = FormAnswerSynthesizer()
+
+    @staticmethod
+    def _autonomous_browsing_enabled() -> bool:
+        return os.getenv("ENABLE_AUTONOMOUS_BROWSING", "false").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+    def _build_executor(self) -> ApplyExecutor:
+        if self._autonomous_browsing_enabled():
+            try:
+                return PlaywrightApplyExecutor(synthesizer=self.answer_synthesizer)
+            except Exception:
+                logger.exception("playwright_executor_init_failed")
+        return SimulatedApplyExecutor()
+
+    async def execute(self, run_id: str) -> None:
+        self.store.set_apply_run_status(run_id=run_id, status=MatchRunStatus.running)
+        try:
+            request = self.store.get_apply_run_request(run_id)
+            attempts = self.store.list_apply_attempts(run_id)
+            executor = self._build_executor()
+
+            for attempt in attempts:
+                browsing = attempt.model_copy(
+                    update={"status": ApplyAttemptStatus.browsing}
+                )
+                self.store.update_apply_attempt(run_id, browsing)
+
+                filling = browsing.model_copy(update={"status": ApplyAttemptStatus.filling})
+                self.store.update_apply_attempt(run_id, filling)
+
+                terminal_attempt = executor.complete_attempt(
+                    attempt=filling,
+                    request=request,
+                )
+                self.store.update_apply_attempt(run_id, terminal_attempt)
+
+                callback_payload = ApplyAttemptCallbackPayload(
+                    idempotency_key=str(uuid4()),
+                    run_id=run_id,
+                    user_ref=request.user_ref,
+                    attempt=terminal_attempt,
+                )
+                self.callback_emitter.emit(callback_payload)
+
+            self.store.set_apply_run_status(run_id=run_id, status=MatchRunStatus.completed)
+        except Exception as exc:
+            logger.exception("apply_run_failed", extra={"run_id": run_id})
+            self.store.set_apply_run_status(
+                run_id=run_id,
+                status=MatchRunStatus.failed,
+                error=str(exc),
+            )

@@ -1,10 +1,14 @@
 from collections.abc import Iterator
+import os
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
+from backend.db_models import UserApplicationProfileRow
 from backend.main import create_app
 from backend.models import (
+    CloudApplyRunCreated,
     CloudMatchRunCreated,
     CloudMatchRunStatus,
     MatchRunStatus,
@@ -16,6 +20,7 @@ class FakeCloudClient:
     def __init__(self) -> None:
         self._next_run = 1
         self._runs: dict[str, list[MatchedJob]] = {}
+        self.apply_run_starts = 0
 
     def run_discovery_now(self) -> dict[str, bool]:
         return {"accepted": True}
@@ -56,13 +61,26 @@ class FakeCloudClient:
             matches=matches,
         )
 
+    def start_apply_run(self, payload) -> CloudApplyRunCreated:
+        del payload
+        self.apply_run_starts += 1
+        run_id = f"apply-run-{self.apply_run_starts}"
+        return CloudApplyRunCreated(
+            run_id=run_id,
+            status=MatchRunStatus.queued,
+            status_url=f"/v1/apply-runs/{run_id}",
+        )
+
 
 @pytest.fixture
 def test_client() -> Iterator[TestClient]:
+    os.environ.setdefault("USER_PROFILE_ENCRYPTION_KEY", "test-profile-encryption-key")
+    fake_cloud = FakeCloudClient()
     app = create_app(
         database_url="sqlite+pysqlite:///:memory:",
-        cloud_client=FakeCloudClient(),
+        cloud_client=fake_cloud,
     )
+    app.state.test_fake_cloud_client = fake_cloud
     with TestClient(app) as client:
         yield client
 
@@ -144,6 +162,7 @@ def test_signup_login_and_me_flow(test_client: TestClient) -> None:
     me_response = test_client.get("/v1/auth/me", headers=_auth_headers(signup_token))
     assert me_response.status_code == 200
     assert me_response.json()["email"] == "jane@example.com"
+    assert me_response.json()["autosubmit_enabled"] is False
 
     login_response = test_client.post(
         "/v1/auth/login",
@@ -280,6 +299,7 @@ def test_agent_run_and_list_applications_are_user_scoped(test_client: TestClient
     )
     assert run_response.status_code == 200
     assert len(run_response.json()["applications"]) == 2
+    assert all(item["status"] == "review" for item in run_response.json()["applications"])
 
     list_a = test_client.get("/v1/applications", headers=_auth_headers(user_a["token"]))
     list_b = test_client.get("/v1/applications", headers=_auth_headers(user_b["token"]))
@@ -288,6 +308,82 @@ def test_agent_run_and_list_applications_are_user_scoped(test_client: TestClient
     assert list_b.status_code == 200
     assert len(list_a.json()["applications"]) == 2
     assert len(list_b.json()["applications"]) == 0
+
+
+def test_profile_round_trip_and_owner_auth(test_client: TestClient) -> None:
+    user = _signup_user(test_client, full_name="Jane Profile", email="profile@example.com")
+    other = _signup_user(test_client, full_name="Jane Other", email="profile-other@example.com")
+    user_id = user["user"]["id"]
+
+    put_response = test_client.put(
+        f"/v1/users/{user_id}/profile",
+        headers=_auth_headers(user["token"]),
+        json={
+            "autosubmit_enabled": True,
+            "work_authorization": "US Citizen",
+            "requires_sponsorship": False,
+            "willing_to_relocate": True,
+            "years_experience": 6,
+            "writing_voice": "concise",
+            "custom_answers": [
+                {"question_key": "favorite_stack", "answer": "python-fastapi-postgres"}
+            ],
+            "sensitive": {
+                "gender": "decline_to_answer",
+                "race_ethnicity": "decline_to_answer",
+                "veteran_status": "not_a_protected_veteran",
+                "disability_status": "decline_to_answer",
+            },
+        },
+    )
+    assert put_response.status_code == 200
+    assert put_response.json()["autosubmit_enabled"] is True
+    assert put_response.json()["custom_answers"][0]["question_key"] == "favorite_stack"
+    with test_client.app.state.main_store._session_factory() as session:
+        stored = session.scalar(
+            select(UserApplicationProfileRow).where(UserApplicationProfileRow.user_id == user_id)
+        )
+    assert stored is not None
+    assert stored.veteran_status_encrypted is not None
+    assert stored.veteran_status_encrypted != "not_a_protected_veteran"
+
+    get_response = test_client.get(
+        f"/v1/users/{user_id}/profile",
+        headers=_auth_headers(user["token"]),
+    )
+    assert get_response.status_code == 200
+    assert get_response.json()["sensitive"]["veteran_status"] == "not_a_protected_veteran"
+
+    forbidden = test_client.get(
+        f"/v1/users/{user_id}/profile",
+        headers=_auth_headers(other["token"]),
+    )
+    assert forbidden.status_code == 403
+
+
+def test_agent_run_with_autosubmit_starts_apply_run(test_client: TestClient) -> None:
+    user = _signup_user(test_client, full_name="Jane Auto", email="auto@example.com")
+    user_id = user["user"]["id"]
+    _seed_profile(test_client, user_id=user_id, applications_per_day=2)
+
+    profile_response = test_client.put(
+        f"/v1/users/{user_id}/profile",
+        headers=_auth_headers(user["token"]),
+        json={"autosubmit_enabled": True},
+    )
+    assert profile_response.status_code == 200
+
+    run_response = test_client.post(
+        "/v1/agent/run",
+        headers=_auth_headers(user["token"]),
+    )
+    assert run_response.status_code == 200
+    body = run_response.json()
+    assert len(body["applications"]) == 2
+    assert all(item["status"] == "applying" for item in body["applications"])
+
+    fake_cloud = test_client.app.state.test_fake_cloud_client
+    assert fake_cloud.apply_run_starts == 1
 
 
 def test_legacy_application_endpoints_return_gone(test_client: TestClient) -> None:

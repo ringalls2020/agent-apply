@@ -13,6 +13,7 @@ type BackendAuthUser = {
   interests: string[];
   applications_per_day: number;
   resume_filename: string | null;
+  autosubmit_enabled: boolean;
 };
 
 type BackendAuthResponse = {
@@ -26,6 +27,7 @@ type BackendApplication = {
   opportunity: {
     title: string;
     company: string;
+    url: string;
   };
   contact: {
     name: string;
@@ -45,6 +47,73 @@ type BackendPreferenceResponse = {
   applications_per_day: number;
 };
 
+type BackendCustomAnswer = {
+  question_key: string;
+  answer: string;
+};
+
+type BackendSensitiveProfile = {
+  gender: string;
+  race_ethnicity: string;
+  veteran_status: string;
+  disability_status: string;
+};
+
+type BackendApplicationProfile = {
+  user_id: string;
+  autosubmit_enabled: boolean;
+  phone: string | null;
+  city: string | null;
+  state: string | null;
+  country: string | null;
+  linkedin_url: string | null;
+  github_url: string | null;
+  portfolio_url: string | null;
+  work_authorization: string | null;
+  requires_sponsorship: boolean | null;
+  willing_to_relocate: boolean | null;
+  years_experience: number | null;
+  writing_voice: string | null;
+  cover_letter_style: string | null;
+  achievements_summary: string | null;
+  custom_answers: BackendCustomAnswer[];
+  additional_context: string | null;
+  sensitive: BackendSensitiveProfile;
+};
+
+type GraphQLCustomAnswerInput = {
+  questionKey: string;
+  answer: string;
+};
+
+type GraphQLSensitiveInput = {
+  gender?: string | null;
+  raceEthnicity?: string | null;
+  veteranStatus?: string | null;
+  disabilityStatus?: string | null;
+};
+
+type GraphQLProfileInput = {
+  autosubmitEnabled: boolean;
+  phone?: string | null;
+  city?: string | null;
+  state?: string | null;
+  country?: string | null;
+  linkedinUrl?: string | null;
+  githubUrl?: string | null;
+  portfolioUrl?: string | null;
+  workAuthorization?: string | null;
+  requiresSponsorship?: boolean | null;
+  willingToRelocate?: boolean | null;
+  yearsExperience?: number | null;
+  writingVoice?: string | null;
+  coverLetterStyle?: string | null;
+  achievementsSummary?: string | null;
+  customAnswers?: GraphQLCustomAnswerInput[];
+  additionalContext?: string | null;
+  sensitive?: GraphQLSensitiveInput | null;
+};
+
 const typeDefs = /* GraphQL */ `
   type User {
     id: ID!
@@ -54,6 +123,7 @@ const typeDefs = /* GraphQL */ `
     applicationsPerDay: Int!
     resumeFilename: String
     resumeText: String
+    autosubmitEnabled: Boolean!
   }
 
   type Application {
@@ -64,6 +134,7 @@ const typeDefs = /* GraphQL */ `
     contactName: String!
     contactEmail: String!
     submittedAt: String!
+    jobUrl: String!
   }
 
   type AuthPayload {
@@ -71,9 +142,76 @@ const typeDefs = /* GraphQL */ `
     user: User!
   }
 
+  type CustomAnswerOverride {
+    questionKey: String!
+    answer: String!
+  }
+
+  type SensitiveProfile {
+    gender: String!
+    raceEthnicity: String!
+    veteranStatus: String!
+    disabilityStatus: String!
+  }
+
+  type ApplicationProfile {
+    autosubmitEnabled: Boolean!
+    phone: String
+    city: String
+    state: String
+    country: String
+    linkedinUrl: String
+    githubUrl: String
+    portfolioUrl: String
+    workAuthorization: String
+    requiresSponsorship: Boolean
+    willingToRelocate: Boolean
+    yearsExperience: Int
+    writingVoice: String
+    coverLetterStyle: String
+    achievementsSummary: String
+    customAnswers: [CustomAnswerOverride!]!
+    additionalContext: String
+    sensitive: SensitiveProfile!
+  }
+
+  input CustomAnswerOverrideInput {
+    questionKey: String!
+    answer: String!
+  }
+
+  input SensitiveProfileInput {
+    gender: String
+    raceEthnicity: String
+    veteranStatus: String
+    disabilityStatus: String
+  }
+
+  input ApplicationProfileInput {
+    autosubmitEnabled: Boolean!
+    phone: String
+    city: String
+    state: String
+    country: String
+    linkedinUrl: String
+    githubUrl: String
+    portfolioUrl: String
+    workAuthorization: String
+    requiresSponsorship: Boolean
+    willingToRelocate: Boolean
+    yearsExperience: Int
+    writingVoice: String
+    coverLetterStyle: String
+    achievementsSummary: String
+    customAnswers: [CustomAnswerOverrideInput!]
+    additionalContext: String
+    sensitive: SensitiveProfileInput
+  }
+
   type Query {
     me: User!
     applications: [Application!]!
+    profile: ApplicationProfile!
   }
 
   type Mutation {
@@ -82,6 +220,7 @@ const typeDefs = /* GraphQL */ `
     updatePreferences(interests: [String!]!, applicationsPerDay: Int!): User!
     uploadResume(filename: String!, text: String!): User!
     runAgent: [Application!]!
+    updateProfile(input: ApplicationProfileInput!): ApplicationProfile!
   }
 `;
 
@@ -101,6 +240,7 @@ function toGraphQLUser(user: BackendAuthUser) {
     applicationsPerDay: user.applications_per_day,
     resumeFilename: user.resume_filename,
     resumeText: null,
+    autosubmitEnabled: user.autosubmit_enabled,
   };
 }
 
@@ -113,11 +253,119 @@ function toGraphQLApplication(application: BackendApplication) {
     contactName: application.contact?.name ?? "",
     contactEmail: application.contact?.email ?? "",
     submittedAt: application.submitted_at ?? "",
+    jobUrl: application.opportunity.url,
+  };
+}
+
+function toGraphQLApplicationProfile(profile: BackendApplicationProfile) {
+  return {
+    autosubmitEnabled: profile.autosubmit_enabled,
+    phone: profile.phone,
+    city: profile.city,
+    state: profile.state,
+    country: profile.country,
+    linkedinUrl: profile.linkedin_url,
+    githubUrl: profile.github_url,
+    portfolioUrl: profile.portfolio_url,
+    workAuthorization: profile.work_authorization,
+    requiresSponsorship: profile.requires_sponsorship,
+    willingToRelocate: profile.willing_to_relocate,
+    yearsExperience: profile.years_experience,
+    writingVoice: profile.writing_voice,
+    coverLetterStyle: profile.cover_letter_style,
+    achievementsSummary: profile.achievements_summary,
+    customAnswers: profile.custom_answers.map((item) => ({
+      questionKey: item.question_key,
+      answer: item.answer,
+    })),
+    additionalContext: profile.additional_context,
+    sensitive: {
+      gender: profile.sensitive.gender,
+      raceEthnicity: profile.sensitive.race_ethnicity,
+      veteranStatus: profile.sensitive.veteran_status,
+      disabilityStatus: profile.sensitive.disability_status,
+    },
   };
 }
 
 async function getAuthenticatedUser(token: string) {
   return requestBackend<BackendAuthUser>("/v1/auth/me", { token });
+}
+
+function defaultProfile(userId: string): BackendApplicationProfile {
+  return {
+    user_id: userId,
+    autosubmit_enabled: false,
+    phone: null,
+    city: null,
+    state: null,
+    country: null,
+    linkedin_url: null,
+    github_url: null,
+    portfolio_url: null,
+    work_authorization: null,
+    requires_sponsorship: null,
+    willing_to_relocate: null,
+    years_experience: null,
+    writing_voice: null,
+    cover_letter_style: null,
+    achievements_summary: null,
+    custom_answers: [],
+    additional_context: null,
+    sensitive: {
+      gender: "decline_to_answer",
+      race_ethnicity: "decline_to_answer",
+      veteran_status: "decline_to_answer",
+      disability_status: "decline_to_answer",
+    },
+  };
+}
+
+async function getProfileOrDefault(token: string, userId: string): Promise<BackendApplicationProfile> {
+  try {
+    return await requestBackend<BackendApplicationProfile>(`/v1/users/${userId}/profile`, {
+      token,
+    });
+  } catch (error: unknown) {
+    if (error instanceof BackendRequestError && error.status === 404) {
+      return defaultProfile(userId);
+    }
+    throw error;
+  }
+}
+
+function toBackendProfilePayload(input: GraphQLProfileInput, current: BackendApplicationProfile) {
+  const mergedSensitive = {
+    gender: input.sensitive?.gender ?? current.sensitive.gender,
+    race_ethnicity: input.sensitive?.raceEthnicity ?? current.sensitive.race_ethnicity,
+    veteran_status: input.sensitive?.veteranStatus ?? current.sensitive.veteran_status,
+    disability_status: input.sensitive?.disabilityStatus ?? current.sensitive.disability_status,
+  };
+
+  return {
+    autosubmit_enabled: input.autosubmitEnabled,
+    phone: input.phone ?? current.phone,
+    city: input.city ?? current.city,
+    state: input.state ?? current.state,
+    country: input.country ?? current.country,
+    linkedin_url: input.linkedinUrl ?? current.linkedin_url,
+    github_url: input.githubUrl ?? current.github_url,
+    portfolio_url: input.portfolioUrl ?? current.portfolio_url,
+    work_authorization: input.workAuthorization ?? current.work_authorization,
+    requires_sponsorship: input.requiresSponsorship ?? current.requires_sponsorship,
+    willing_to_relocate: input.willingToRelocate ?? current.willing_to_relocate,
+    years_experience: input.yearsExperience ?? current.years_experience,
+    writing_voice: input.writingVoice ?? current.writing_voice,
+    cover_letter_style: input.coverLetterStyle ?? current.cover_letter_style,
+    achievements_summary: input.achievementsSummary ?? current.achievements_summary,
+    custom_answers:
+      input.customAnswers?.map((item) => ({
+        question_key: item.questionKey,
+        answer: item.answer,
+      })) ?? current.custom_answers,
+    additional_context: input.additionalContext ?? current.additional_context,
+    sensitive: mergedSensitive,
+  };
 }
 
 const schema = createSchema({
@@ -135,6 +383,12 @@ const schema = createSchema({
           { token },
         );
         return response.applications.map(toGraphQLApplication);
+      },
+      profile: async (_root, _args, ctx: GraphQLContext) => {
+        const token = requireToken(ctx.token);
+        const user = await getAuthenticatedUser(token);
+        const profile = await getProfileOrDefault(token, user.id);
+        return toGraphQLApplicationProfile(profile);
       },
     },
     Mutation: {
@@ -231,6 +485,27 @@ const schema = createSchema({
           },
         );
         return response.applications.map(toGraphQLApplication);
+      },
+      updateProfile: async (
+        _root,
+        args: { input: GraphQLProfileInput },
+        ctx: GraphQLContext,
+      ) => {
+        const token = requireToken(ctx.token);
+        const user = await getAuthenticatedUser(token);
+        const current = await getProfileOrDefault(token, user.id);
+        const payload = toBackendProfilePayload(args.input, current);
+
+        const updated = await requestBackend<BackendApplicationProfile>(
+          `/v1/users/${user.id}/profile`,
+          {
+            method: "PUT",
+            token,
+            body: payload,
+          },
+        );
+
+        return toGraphQLApplicationProfile(updated);
       },
     },
   },

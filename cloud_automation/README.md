@@ -55,6 +55,17 @@ If seed variables are empty in that mode, discovery returns no jobs.
 - `CLOUD_CALLBACK_SIGNING_SECRET` (default: falls back to `CLOUD_AUTOMATION_SIGNING_SECRET`)
 - `CLOUD_CALLBACK_SIGNATURE_SECRET` (default: same as callback signing secret)
 
+### Autonomous apply + LLM
+
+- `ENABLE_AUTONOMOUS_BROWSING` (default: `false`; enables Playwright executor)
+- `PLAYWRIGHT_HEADLESS` (default: `true`)
+- `PLAYWRIGHT_NAV_TIMEOUT_SECONDS` (default: `20`)
+- `PLAYWRIGHT_ACTION_TIMEOUT_SECONDS` (default: `5`)
+- `PLAYWRIGHT_CAPTURE_SCREENSHOTS` (default: `true`)
+- `OPENAI_API_KEY` (optional; enables LLM-generated long-form answers)
+- `OPENAI_MODEL` (default: `gpt-4.1-mini`)
+- `OPENAI_TIMEOUT_SECONDS` (default: `20`)
+
 ## Local run
 
 ```bash

@@ -7,8 +7,11 @@ from pydantic import BaseModel, Field
 
 class ApplicationStatus(str, Enum):
     discovered = "discovered"
+    review = "review"
+    applying = "applying"
     applied = "applied"
     notified = "notified"
+    failed = "failed"
 
 
 class Opportunity(BaseModel):
@@ -115,6 +118,7 @@ class AuthUserProfile(BaseModel):
     interests: List[str] = Field(default_factory=list)
     applications_per_day: int = 25
     resume_filename: str | None = None
+    autosubmit_enabled: bool = False
 
 
 class AuthResponse(BaseModel):
@@ -135,6 +139,70 @@ class PreferenceResponse(BaseModel):
     locations: List[str]
     seniority: Optional[str] = None
     applications_per_day: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class CustomAnswerOverride(BaseModel):
+    question_key: str = Field(min_length=1, max_length=255)
+    answer: str = Field(min_length=1)
+
+
+class SensitiveProfileUpsertRequest(BaseModel):
+    gender: str | None = None
+    race_ethnicity: str | None = None
+    veteran_status: str | None = None
+    disability_status: str | None = None
+
+
+class SensitiveProfileResponse(BaseModel):
+    gender: str = "decline_to_answer"
+    race_ethnicity: str = "decline_to_answer"
+    veteran_status: str = "decline_to_answer"
+    disability_status: str = "decline_to_answer"
+
+
+class ApplicationProfileUpsertRequest(BaseModel):
+    autosubmit_enabled: bool = False
+    phone: str | None = None
+    city: str | None = None
+    state: str | None = None
+    country: str | None = None
+    linkedin_url: str | None = None
+    github_url: str | None = None
+    portfolio_url: str | None = None
+    work_authorization: str | None = None
+    requires_sponsorship: bool | None = None
+    willing_to_relocate: bool | None = None
+    years_experience: int | None = Field(default=None, ge=0, le=80)
+    writing_voice: str | None = None
+    cover_letter_style: str | None = None
+    achievements_summary: str | None = None
+    custom_answers: List[CustomAnswerOverride] = Field(default_factory=list)
+    additional_context: str | None = None
+    sensitive: SensitiveProfileUpsertRequest | None = None
+
+
+class ApplicationProfileResponse(BaseModel):
+    user_id: str
+    autosubmit_enabled: bool
+    phone: str | None = None
+    city: str | None = None
+    state: str | None = None
+    country: str | None = None
+    linkedin_url: str | None = None
+    github_url: str | None = None
+    portfolio_url: str | None = None
+    work_authorization: str | None = None
+    requires_sponsorship: bool | None = None
+    willing_to_relocate: bool | None = None
+    years_experience: int | None = None
+    writing_voice: str | None = None
+    cover_letter_style: str | None = None
+    achievements_summary: str | None = None
+    custom_answers: List[CustomAnswerOverride] = Field(default_factory=list)
+    additional_context: str | None = None
+    sensitive: SensitiveProfileResponse = Field(default_factory=SensitiveProfileResponse)
     created_at: datetime
     updated_at: datetime
 

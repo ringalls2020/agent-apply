@@ -24,6 +24,7 @@ type Application = {
   contactName: string | null;
   contactEmail: string | null;
   submittedAt: string;
+  jobUrl: string;
 };
 
 type ApplicationsQuery = {
@@ -34,6 +35,7 @@ type UserProfile = {
   name: string;
   interests: string[];
   applicationsPerDay: number;
+  autosubmitEnabled: boolean;
 };
 
 type MeQuery = {
@@ -49,9 +51,28 @@ function formatSubmittedAt(dateString: string) {
 function ApplicationsInner() {
   const { isCheckingAuth, isAuthenticated } = useRequireAuth();
   const [error, setError] = useState("");
+  const [isPostRunRefreshing, setIsPostRunRefreshing] = useState(false);
   const { data: meData } = useQuery<MeQuery>(ME, { skip: !isAuthenticated });
   const { data, loading, refetch } = useQuery<ApplicationsQuery>(APPLICATIONS, { skip: !isAuthenticated });
   const [runAgent, { loading: running }] = useMutation(RUN_AGENT);
+
+  const triggerRunAgent = async () => {
+    setError("");
+    await runAgent();
+    await refetch();
+
+    if (meData?.me?.autosubmitEnabled) {
+      setIsPostRunRefreshing(true);
+      try {
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 1200));
+          await refetch();
+        }
+      } finally {
+        setIsPostRunRefreshing(false);
+      }
+    }
+  };
 
   const columns = useMemo<DataTableColumn<Application>[]>(
     () => [
@@ -63,7 +84,19 @@ function ApplicationsInner() {
       {
         id: "role",
         header: "Role",
-        render: (app) => app.title,
+        render: (app) => (
+          <a
+            href={app.jobUrl}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="inline-flex items-center gap-1 text-accentSoft hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/45"
+          >
+            {app.title}
+            <span aria-hidden="true" className="text-xs text-muted">
+              {"->"}
+            </span>
+          </a>
+        ),
       },
       {
         id: "status",
@@ -148,13 +181,11 @@ function ApplicationsInner() {
             </p>
           </div>
           <Button
-            loading={running}
-            loadingText="Running agent..."
+            loading={running || isPostRunRefreshing}
+            loadingText={isPostRunRefreshing ? "Refreshing results..." : "Running agent..."}
             onClick={async () => {
-              setError("");
               try {
-                await runAgent();
-                await refetch();
+                await triggerRunAgent();
               } catch (err: unknown) {
                 setError(err instanceof Error ? err.message : "Could not run agent.");
               }
@@ -179,13 +210,11 @@ function ApplicationsInner() {
                 description="Trigger the automation to generate the first application attempts for your configured interests."
                 action={
                   <Button
-                    loading={running}
-                    loadingText="Running agent..."
+                    loading={running || isPostRunRefreshing}
+                    loadingText={isPostRunRefreshing ? "Refreshing results..." : "Running agent..."}
                     onClick={async () => {
-                      setError("");
                       try {
-                        await runAgent();
-                        await refetch();
+                        await triggerRunAgent();
                       } catch (err: unknown) {
                         setError(err instanceof Error ? err.message : "Could not run agent.");
                       }

@@ -17,13 +17,17 @@ from .db_models import (
     ExternalRunRefRow,
     JobMatchRow,
     ResumeRow,
+    UserApplicationProfileRow,
     UserPreferenceRow,
     UserRow,
     WebhookEventRow,
 )
 from .models import (
     AgentRunRequest,
+    ApplicationProfileResponse,
+    ApplicationProfileUpsertRequest,
     ApplyAttemptCallback,
+    ApplyAttemptStatus,
     ApplyAttemptResult,
     ApplyRunStartRequest,
     ApplyRunStartResponse,
@@ -44,10 +48,18 @@ from .models import (
     ResumeResponse,
     ResumeUpsertRequest,
     RunKind,
+    SensitiveProfileResponse,
+    SensitiveProfileUpsertRequest,
     UserResponse,
     UserUpsertRequest,
 )
-from .security import sha256_hex, verify_password
+from .security import (
+    SecurityError,
+    decrypt_sensitive_text,
+    encrypt_sensitive_text,
+    sha256_hex,
+    verify_password,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -135,18 +147,61 @@ class PostgresStore:
         logger.debug("store_list_all_completed", extra={"records": len(records)})
         return records
 
+    def update_status_for_user_opportunity(
+        self,
+        *,
+        user_id: str,
+        opportunity_id: str,
+        status: ApplicationStatus,
+        submitted_at: datetime | None = None,
+    ) -> None:
+        with self._session_factory() as session:
+            row = session.scalar(
+                select(ApplicationRecordRow)
+                .where(
+                    and_(
+                        ApplicationRecordRow.user_id == user_id,
+                        ApplicationRecordRow.opportunity_id == opportunity_id,
+                    )
+                )
+                .limit(1)
+            )
+            if row is None:
+                return
+
+            row.status = status.value
+            if submitted_at is not None:
+                row.submitted_at = submitted_at
+            session.commit()
+
     @staticmethod
     def _sync_row(*, row: ApplicationRecordRow, record: ApplicationRecord, user_id: str) -> None:
         row.user_id = user_id
-        row.status = record.status.value
+        if row.status:
+            try:
+                existing_status = ApplicationStatus(row.status)
+            except Exception:
+                existing_status = None
+            else:
+                if (
+                    existing_status in {ApplicationStatus.applied, ApplicationStatus.notified, ApplicationStatus.failed}
+                    and record.status in {ApplicationStatus.review, ApplicationStatus.applying}
+                ):
+                    row.status = existing_status.value
+                else:
+                    row.status = record.status.value
+        else:
+            row.status = record.status.value
         row.opportunity_id = record.opportunity.id
         row.opportunity_title = record.opportunity.title
         row.opportunity_company = record.opportunity.company
         row.opportunity_url = record.opportunity.url
         row.opportunity_reason = record.opportunity.reason
         row.opportunity_discovered_at = record.opportunity.discovered_at
-        row.submitted_at = record.submitted_at
-        row.notified_at = record.notified_at
+        if record.submitted_at is not None:
+            row.submitted_at = record.submitted_at
+        if record.notified_at is not None:
+            row.notified_at = record.notified_at
 
         if record.contact is None:
             row.contact_name = None
@@ -314,6 +369,16 @@ def _json_loads(value: str | None, default: Any) -> Any:
         return json.loads(value)
     except Exception:
         return default
+
+
+_DECLINE_TO_ANSWER = "decline_to_answer"
+
+
+def _normalize_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
 
 
 def _sanitize_resume_text(value: str) -> str:
@@ -554,6 +619,70 @@ class MainPlatformStore:
             if row is None:
                 return None
             return self._to_preferences(row)
+
+    def upsert_application_profile(
+        self, user_id: str, payload: ApplicationProfileUpsertRequest
+    ) -> ApplicationProfileResponse:
+        now = datetime.utcnow()
+        with self._session_factory() as session:
+            row = session.get(UserApplicationProfileRow, user_id)
+            if row is None:
+                row = UserApplicationProfileRow(
+                    user_id=user_id,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(row)
+
+            row.autosubmit_enabled = payload.autosubmit_enabled
+            row.phone = _normalize_optional_text(payload.phone)
+            row.city = _normalize_optional_text(payload.city)
+            row.state = _normalize_optional_text(payload.state)
+            row.country = _normalize_optional_text(payload.country)
+
+            row.linkedin_url = _normalize_optional_text(payload.linkedin_url)
+            row.github_url = _normalize_optional_text(payload.github_url)
+            row.portfolio_url = _normalize_optional_text(payload.portfolio_url)
+
+            row.work_authorization = _normalize_optional_text(payload.work_authorization)
+            row.requires_sponsorship = payload.requires_sponsorship
+            row.willing_to_relocate = payload.willing_to_relocate
+            row.years_experience = payload.years_experience
+
+            row.writing_voice = _normalize_optional_text(payload.writing_voice)
+            row.cover_letter_style = _normalize_optional_text(payload.cover_letter_style)
+            row.achievements_summary = _normalize_optional_text(payload.achievements_summary)
+            row.additional_context = _normalize_optional_text(payload.additional_context)
+            row.custom_answers_json = _json_dumps(
+                [item.model_dump(mode="json") for item in payload.custom_answers]
+            )
+
+            sensitive = payload.sensitive or SensitiveProfileUpsertRequest()
+            row.gender_encrypted = self._encrypt_optional_sensitive(sensitive.gender)
+            row.race_ethnicity_encrypted = self._encrypt_optional_sensitive(
+                sensitive.race_ethnicity
+            )
+            row.veteran_status_encrypted = self._encrypt_optional_sensitive(
+                sensitive.veteran_status
+            )
+            row.disability_status_encrypted = self._encrypt_optional_sensitive(
+                sensitive.disability_status
+            )
+
+            row.updated_at = now
+            if not row.created_at:
+                row.created_at = now
+
+            session.commit()
+            session.refresh(row)
+            return self._to_application_profile(row)
+
+    def get_application_profile(self, user_id: str) -> ApplicationProfileResponse | None:
+        with self._session_factory() as session:
+            row = session.get(UserApplicationProfileRow, user_id)
+            if row is None:
+                return None
+            return self._to_application_profile(row)
 
     def upsert_resume(self, user_id: str, payload: ResumeUpsertRequest) -> ResumeResponse:
         now = datetime.utcnow()
@@ -861,6 +990,76 @@ class MainPlatformStore:
         )
 
     @staticmethod
+    def _encrypt_optional_sensitive(value: str | None) -> str | None:
+        normalized = _normalize_optional_text(value)
+        if normalized is None:
+            return None
+        return encrypt_sensitive_text(normalized)
+
+    @staticmethod
+    def _decrypt_sensitive_with_default(value: str | None) -> str:
+        if not value:
+            return _DECLINE_TO_ANSWER
+        try:
+            decrypted = decrypt_sensitive_text(value).strip()
+            return decrypted or _DECLINE_TO_ANSWER
+        except SecurityError:
+            logger.warning("sensitive_profile_field_decrypt_failed")
+            return _DECLINE_TO_ANSWER
+
+    @staticmethod
+    def _parse_custom_answers(raw_json: str | None) -> list[dict[str, str]]:
+        decoded = _json_loads(raw_json, [])
+        if isinstance(decoded, list):
+            return [
+                {"question_key": str(item.get("question_key", "")), "answer": str(item.get("answer", ""))}
+                for item in decoded
+                if isinstance(item, dict)
+                and str(item.get("question_key", "")).strip()
+                and str(item.get("answer", "")).strip()
+            ]
+        if isinstance(decoded, dict):
+            return [
+                {"question_key": str(key), "answer": str(value)}
+                for key, value in decoded.items()
+                if str(key).strip() and str(value).strip()
+            ]
+        return []
+
+    @classmethod
+    def _to_application_profile(
+        cls, row: UserApplicationProfileRow
+    ) -> ApplicationProfileResponse:
+        return ApplicationProfileResponse(
+            user_id=row.user_id,
+            autosubmit_enabled=row.autosubmit_enabled,
+            phone=row.phone,
+            city=row.city,
+            state=row.state,
+            country=row.country,
+            linkedin_url=row.linkedin_url,
+            github_url=row.github_url,
+            portfolio_url=row.portfolio_url,
+            work_authorization=row.work_authorization,
+            requires_sponsorship=row.requires_sponsorship,
+            willing_to_relocate=row.willing_to_relocate,
+            years_experience=row.years_experience,
+            writing_voice=row.writing_voice,
+            cover_letter_style=row.cover_letter_style,
+            achievements_summary=row.achievements_summary,
+            custom_answers=cls._parse_custom_answers(row.custom_answers_json),
+            additional_context=row.additional_context,
+            sensitive=SensitiveProfileResponse(
+                gender=cls._decrypt_sensitive_with_default(row.gender_encrypted),
+                race_ethnicity=cls._decrypt_sensitive_with_default(row.race_ethnicity_encrypted),
+                veteran_status=cls._decrypt_sensitive_with_default(row.veteran_status_encrypted),
+                disability_status=cls._decrypt_sensitive_with_default(row.disability_status_encrypted),
+            ),
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+    @staticmethod
     def _to_preferences(row: UserPreferenceRow) -> PreferenceResponse:
         return PreferenceResponse(
             user_id=row.user_id,
@@ -916,10 +1115,12 @@ class CloudOrchestrationService:
         *,
         store: MainPlatformStore,
         cloud_client: CloudAutomationClient,
+        application_store: PostgresStore | None = None,
         default_daily_cap: int = 25,
     ) -> None:
         self.store = store
         self.cloud_client = cloud_client
+        self.application_store = application_store
         self.default_daily_cap = default_daily_cap
         logger.debug(
             "cloud_orchestration_service_initialized",
@@ -945,6 +1146,12 @@ class CloudOrchestrationService:
         self._require_user(user_id)
         return self.store.upsert_resume(user_id=user_id, payload=payload)
 
+    def upsert_application_profile(
+        self, user_id: str, payload: ApplicationProfileUpsertRequest
+    ) -> ApplicationProfileResponse:
+        self._require_user(user_id)
+        return self.store.upsert_application_profile(user_id=user_id, payload=payload)
+
     def get_user(self, user_id: str) -> UserResponse | None:
         return self.store.get_user(user_id)
 
@@ -953,6 +1160,9 @@ class CloudOrchestrationService:
 
     def get_resume(self, user_id: str) -> ResumeResponse | None:
         return self.store.get_resume(user_id)
+
+    def get_application_profile(self, user_id: str) -> ApplicationProfileResponse | None:
+        return self.store.get_application_profile(user_id)
 
     def start_match_run(
         self, *, user_id: str, payload: MatchRunStartRequest
@@ -1018,6 +1228,7 @@ class CloudOrchestrationService:
         self, *, user_id: str, payload: ApplyRunStartRequest
     ) -> ApplyRunStartResponse:
         user, preferences, resume = self._require_user_context(user_id)
+        application_profile = self.store.get_application_profile(user_id)
         daily_cap = (
             payload.daily_cap
             if payload.daily_cap is not None
@@ -1037,6 +1248,16 @@ class CloudOrchestrationService:
                 "email": user.email,
                 "resume_text": resume.resume_text,
                 "preferences": preferences.model_dump(mode="json"),
+                "application_profile": (
+                    application_profile.model_dump(mode="json")
+                    if application_profile is not None
+                    else {
+                        "user_id": user_id,
+                        "autosubmit_enabled": False,
+                        "custom_answers": [],
+                        "sensitive": SensitiveProfileResponse().model_dump(mode="json"),
+                    }
+                ),
             },
             credentials_ref=payload.credentials_ref,
             daily_cap=daily_cap,
@@ -1090,6 +1311,19 @@ class CloudOrchestrationService:
             external_run_id=payload.run_id,
             attempt=payload.attempt,
         )
+        if (
+            self.application_store is None
+            or not payload.attempt.external_job_id
+        ):
+            return
+
+        mapped_status = self._map_apply_attempt_to_application_status(payload.attempt.status)
+        self.application_store.update_status_for_user_opportunity(
+            user_id=payload.user_ref,
+            opportunity_id=payload.attempt.external_job_id,
+            status=mapped_status,
+            submitted_at=payload.attempt.submitted_at,
+        )
 
     def register_webhook_event_if_new(
         self,
@@ -1126,3 +1360,13 @@ class CloudOrchestrationService:
         if resume is None or not resume.resume_text.strip():
             raise ValueError("User resume not found")
         return user, preferences, resume
+
+    @staticmethod
+    def _map_apply_attempt_to_application_status(
+        attempt_status: ApplyAttemptStatus,
+    ) -> ApplicationStatus:
+        if attempt_status in {ApplyAttemptStatus.succeeded, ApplyAttemptStatus.submitted}:
+            return ApplicationStatus.applied
+        if attempt_status in {ApplyAttemptStatus.failed, ApplyAttemptStatus.blocked}:
+            return ApplicationStatus.failed
+        return ApplicationStatus.applying

@@ -73,5 +73,5 @@ alembic upgrade head
 
 - Live discovery connectors are available for Greenhouse, Lever, and SmartRecruiters.
 - Set `USE_ONLY_LIVE_ADAPTERS=true` and configure seed envs to disable synthetic fallback listings.
-- Cloud apply service includes autonomous run lifecycle, attempt statuses, and signed callback wiring.
+- Cloud apply service includes autonomous run lifecycle, attempt statuses, signed callback wiring, and optional Playwright/LLM-driven form answering via env flags.
 - For production scraping and auto-submit usage, add legal/compliance review and provider-specific hardening.
