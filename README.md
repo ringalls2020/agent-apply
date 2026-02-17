@@ -1,66 +1,89 @@
 # agent-apply
 
-An opinionated starter for an **agentic job application assistant** with a lightweight admin dashboard.
+A full starter implementation of an **agentic job-application application** that takes a resume + interests, discovers opportunities, applies, enriches point-of-contact details, notifies, and provides an admin dashboard for management.
 
-## Product scope
+## Implemented app capabilities
 
-This project provides backend scaffolding for an agent that can:
+This PR now includes the complete app skeleton discussed, not only a partial API:
 
-1. Accept candidate resume text and interests.
-2. Discover opportunities that align with those interests.
-3. Simulate applying to each matching role.
-4. Enrich each application with a point of contact.
-5. Track and display notification status for each submitted application.
+- **Agent pipeline orchestration** (`discover -> apply -> contact -> notify`)
+- **HTTP API** for execution and management
+- **Admin dashboard** to view/manage application state
+- **Mutable application lifecycle controls** (update status, archive, delete)
+- **Validation layer** for input constraints
+- **Optional JSON-file persistence** via environment variable
+- **Unit and integration test suite**
 
-> Current behavior is intentionally mock/deterministic to make extension and testing straightforward.
+## Architecture
 
-## Architecture overview
-
-- `app/models.py`: Pydantic request/response/domain models.
-- `app/services.py`: In-memory persistence and agent pipeline orchestration.
-- `app/main.py`: FastAPI app factory + HTTP routes.
-- `app/templates/dashboard.html`: Admin dashboard UI.
-- `tests/test_services.py`: Unit tests for store and pipeline behavior.
-- `tests/test_api.py`: Integration tests for API + dashboard routes.
+```text
+app/
+  main.py          # app factory, routes, dashboard wiring
+  models.py        # request/response/domain models
+  services.py      # discover/apply/contact/notify services + agent coordinator
+  store.py         # in-memory + JSON-file store
+  templates/
+    dashboard.html # admin UI
+tests/
+  test_services.py # unit tests
+  test_api.py      # integration tests
+```
 
 ## API reference
 
-### `GET /health`
-Simple health-check endpoint.
+### Core
 
-**Response**
+- `GET /health`
+- `POST /agent/run`
+- `GET /applications`
 
-```json
-{"status": "ok"}
-```
+### Management
 
-### `POST /agent/run`
-Runs the agent pipeline end-to-end for the given profile.
+- `PATCH /applications/{application_id}`
+  - Update application status (`discovered`, `applied`, `contacted`, `notified`, `archived`)
+  - Add optional notes
+- `DELETE /applications/{application_id}`
+  - Remove an application from admin view/state
 
-**Request body**
+### Dashboard
+
+- `GET /admin`
+  - Renders HTML dashboard with summary cards + application table
+
+## Example run payload
 
 ```json
 {
   "profile": {
     "full_name": "Jane Doe",
     "email": "jane@example.com",
-    "resume_text": "5 years building ML products and automations",
-    "interests": ["ai", "climate", "robotics"]
+    "resume_text": "5+ years building agentic and ML automation systems across recruiting and workflow tooling.",
+    "interests": ["ai", "climate", "robotics"],
+    "locations": ["Remote", "NYC"]
   },
-  "max_opportunities": 5
+  "max_opportunities": 5,
+  "auto_apply": true
 }
 ```
 
-**Validation notes**
+## Validation rules
 
-- `interests` must contain at least one value.
-- `max_opportunities` must be between `1` and `25`.
+- `profile.resume_text` minimum 50 characters
+- `profile.interests` must be non-empty
+- `profile.email` and contact emails validated
+- `max_opportunities` must be between 1 and 25
 
-### `GET /applications`
-Returns all currently tracked applications in reverse discovery order.
+## Persistence mode
 
-### `GET /admin`
-Renders an HTML dashboard showing aggregate metrics and application details.
+By default, the app uses in-memory storage.
+
+To persist data to disk:
+
+```bash
+export AGENT_APPLY_STORE_FILE=.data/applications.json
+```
+
+Then start the app normally.
 
 ## Quick start
 
@@ -76,31 +99,28 @@ Open:
 - API docs: `http://127.0.0.1:8000/docs`
 - Dashboard: `http://127.0.0.1:8000/admin`
 
-## Running tests
+## Tests
 
 ```bash
-pytest
+pytest -q
 ```
 
-Test coverage includes:
+Coverage includes:
 
-- unit tests for `InMemoryStore` ordering behavior,
-- unit tests for end-to-end pipeline state transitions,
-- integration tests for `health`, `agent/run`, `applications`, and `admin` routes,
-- validation coverage for empty `interests` payload rejection.
+- service/pipeline unit tests,
+- store ordering behavior,
+- auto-apply on/off behavior,
+- API integration tests for run/list/update/delete flows,
+- validation failure behavior,
+- dashboard rendering,
+- file persistence behavior with environment configuration.
 
-## Extension guide (recommended next steps)
+## Productionization checklist
 
-1. **Discovery providers**
-   - Replace `_discover` with real web/job search APIs (e.g., Tavily, SerpAPI, custom feeds).
-2. **Application automation**
-   - Add browser automation with explicit user approval gates and anti-abuse guardrails.
-3. **Contact enrichment**
-   - Integrate provider(s) for hiring manager/recruiter lookup and confidence scoring.
-4. **Notification transport**
-   - Send delivery events via email, Slack, or SMS with idempotency handling.
-5. **Persistence and auth**
-   - Move from in-memory store to a database.
-   - Add admin authentication and role-based access control.
-6. **Observability and compliance**
-   - Add audit logs, structured tracing, policy checks, and error reporting.
+1. Plug in real web search providers in `DiscoveryService`.
+2. Add secure browser automation and consent gates in `ApplyService`.
+3. Integrate contact enrichment APIs and confidence scoring.
+4. Add notification channels (email/slack/sms/webhooks).
+5. Move to real DB + migrations (PostgreSQL recommended).
+6. Add authN/authZ for dashboard management.
+7. Add observability, retries, audit logs, and policy controls.
