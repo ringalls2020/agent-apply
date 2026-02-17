@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 
-from app.models import AgentRunRequest, CandidateProfile
-from app.services import InMemoryStore, OpportunityAgent
+from backend.models import AgentRunRequest, CandidateProfile
+from backend.services import InMemoryStore, OpportunityAgent
 
 
 def build_request(max_opportunities: int = 3) -> AgentRunRequest:
