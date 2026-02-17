@@ -35,7 +35,7 @@ All `/v1/*` endpoints require service JWT auth.
 ### Discovery cadence
 
 - `DISCOVERY_INTERVAL_SECONDS` (default: `21600`, 6h)
-- `ENABLE_EMBEDDED_DISCOVERY_LOOP` (default: `true`; set to `false` if using dedicated discovery worker)
+- `ENABLE_EMBEDDED_DISCOVERY_LOOP` (default: `false`; enable only for single-process local development)
 
 ### Live adapter seeds (optional)
 
@@ -77,6 +77,7 @@ uvicorn cloud_automation.main:app --reload --port 8100
 Optional separate worker process entrypoints are included:
 
 - `python -m cloud_automation.workers.discovery_worker`
+- `python -m cloud_automation.workers.match_worker`
 - `python -m cloud_automation.workers.apply_worker`
 - `python -m cloud_automation.workers.maintenance_worker`
 

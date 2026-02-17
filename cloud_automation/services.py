@@ -4,13 +4,15 @@ import hashlib
 import json
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any, Callable, Dict, List, Protocol
 from uuid import uuid4
 
 import httpx
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session
+
+from common.time import utc_epoch_seconds, utc_now
 
 from .db_models import (
     ApplyAttemptRow,
@@ -75,7 +77,7 @@ class JobIntelStore:
 
             source.last_cursor = next_cursor
             source.health_status = "ok"
-            source.updated_at = datetime.utcnow()
+            source.updated_at = utc_now()
 
             for url in discovered_urls:
                 raw_doc_id = str(uuid4())
@@ -85,7 +87,7 @@ class JobIntelStore:
                         source_id=source_name,
                         url=url,
                         body=raw_documents[url],
-                        fetched_at=datetime.utcnow(),
+                        fetched_at=utc_now(),
                     )
                 )
 
@@ -120,7 +122,7 @@ class JobIntelStore:
                         source=job.source,
                         posted_at=job.posted_at,
                         description=job.description,
-                        created_at=datetime.utcnow(),
+                        created_at=utc_now(),
                     )
                 )
                 session.add(
@@ -128,7 +130,7 @@ class JobIntelStore:
                         id=str(uuid4()),
                         fingerprint=fingerprint,
                         canonical_job_id=job.id,
-                        created_at=datetime.utcnow(),
+                        created_at=utc_now(),
                     )
                 )
 
@@ -143,7 +145,7 @@ class JobIntelStore:
                     status="running",
                     source_count=source_count,
                     discovered_count=0,
-                    started_at=datetime.utcnow(),
+                    started_at=utc_now(),
                 )
             )
             session.commit()
@@ -159,34 +161,42 @@ class JobIntelStore:
             row.discovered_count = discovered_count
             row.status = "failed" if error else "completed"
             row.error = error
-            row.completed_at = datetime.utcnow()
+            row.completed_at = utc_now()
             session.commit()
 
     def search_jobs(
         self, *, keywords: list[str], location: str | None = None, limit: int = 50
     ) -> list[NormalizedJob]:
-        with self._session_factory() as session:
-            rows = session.scalars(
-                select(NormalizedJobRow).order_by(NormalizedJobRow.created_at.desc()).limit(
-                    max(limit * 5, 50)
+        normalized_limit = min(max(limit, 1), 100)
+        normalized_keywords = [item.strip().lower() for item in keywords if item.strip()]
+        normalized_location = location.strip().lower() if isinstance(location, str) and location.strip() else None
+
+        filters = []
+        if normalized_location:
+            location_pattern = f"%{normalized_location}%"
+            filters.append(
+                func.lower(func.coalesce(NormalizedJobRow.location, "")).like(location_pattern)
+            )
+        if normalized_keywords:
+            keyword_clauses = []
+            for keyword in normalized_keywords:
+                pattern = f"%{keyword}%"
+                keyword_clauses.append(
+                    or_(
+                        func.lower(func.coalesce(NormalizedJobRow.title, "")).like(pattern),
+                        func.lower(func.coalesce(NormalizedJobRow.description, "")).like(pattern),
+                        func.lower(func.coalesce(NormalizedJobRow.company, "")).like(pattern),
+                    )
                 )
-            ).all()
+            filters.append(or_(*keyword_clauses))
 
-        normalized = [self._to_normalized_job(row) for row in rows]
-        if not keywords and not location:
-            return normalized[:limit]
+        stmt = select(NormalizedJobRow).order_by(NormalizedJobRow.created_at.desc()).limit(normalized_limit)
+        if filters:
+            stmt = stmt.where(and_(*filters))
 
-        filtered: list[NormalizedJob] = []
-        keywords_lower = [kw.lower() for kw in keywords]
-        for job in normalized:
-            if location and (job.location or "").lower() != location.lower():
-                continue
-            haystack = f"{job.title} {job.description}".lower()
-            if keywords_lower and not any(kw in haystack for kw in keywords_lower):
-                continue
-            filtered.append(job)
-
-        return filtered[:limit]
+        with self._session_factory() as session:
+            rows = session.scalars(stmt).all()
+            return [self._to_normalized_job(row) for row in rows]
 
     def create_match_run(self, request: MatchRunRequest) -> str:
         run_id = str(uuid4())
@@ -197,12 +207,36 @@ class JobIntelStore:
                     user_ref=request.user_ref,
                     status=MatchRunStatus.queued.value,
                     request_json=request.model_dump_json(),
-                    started_at=datetime.utcnow(),
-                    updated_at=datetime.utcnow(),
+                    started_at=utc_now(),
+                    updated_at=utc_now(),
                 )
             )
             session.commit()
         return run_id
+
+    def list_queued_match_run_ids(self, *, limit: int = 50) -> list[str]:
+        with self._session_factory() as session:
+            return session.scalars(
+                select(MatchRunRow.id)
+                .where(MatchRunRow.status == MatchRunStatus.queued.value)
+                .order_by(MatchRunRow.started_at.asc())
+                .limit(max(limit, 1))
+            ).all()
+
+    def claim_match_run(self, run_id: str) -> bool:
+        with self._session_factory() as session:
+            result = session.execute(
+                update(MatchRunRow)
+                .where(
+                    and_(
+                        MatchRunRow.id == run_id,
+                        MatchRunRow.status == MatchRunStatus.queued.value,
+                    )
+                )
+                .values(status=MatchRunStatus.running.value, updated_at=utc_now())
+            )
+            session.commit()
+            return bool(result.rowcount)
 
     def set_match_run_status(
         self, *, run_id: str, status: MatchRunStatus, error: str | None = None
@@ -213,7 +247,7 @@ class JobIntelStore:
                 return
             row.status = status.value
             row.error = error
-            row.updated_at = datetime.utcnow()
+            row.updated_at = utc_now()
             session.commit()
 
     def get_match_run_request(self, run_id: str) -> MatchRunRequest:
@@ -288,8 +322,8 @@ class JobIntelStore:
                     user_ref=request.user_ref,
                     status=MatchRunStatus.queued.value,
                     request_json=request.model_dump_json(),
-                    started_at=datetime.utcnow(),
-                    updated_at=datetime.utcnow(),
+                    started_at=utc_now(),
+                    updated_at=utc_now(),
                 )
             )
 
@@ -301,13 +335,37 @@ class JobIntelStore:
                         external_job_id=job.external_job_id,
                         job_url=job.apply_url,
                         status=ApplyAttemptStatus.queued.value,
-                        created_at=datetime.utcnow(),
-                        updated_at=datetime.utcnow(),
+                        created_at=utc_now(),
+                        updated_at=utc_now(),
                     )
                 )
 
             session.commit()
         return run_id
+
+    def list_queued_apply_run_ids(self, *, limit: int = 50) -> list[str]:
+        with self._session_factory() as session:
+            return session.scalars(
+                select(ApplyRunRow.id)
+                .where(ApplyRunRow.status == MatchRunStatus.queued.value)
+                .order_by(ApplyRunRow.started_at.asc())
+                .limit(max(limit, 1))
+            ).all()
+
+    def claim_apply_run(self, run_id: str) -> bool:
+        with self._session_factory() as session:
+            result = session.execute(
+                update(ApplyRunRow)
+                .where(
+                    and_(
+                        ApplyRunRow.id == run_id,
+                        ApplyRunRow.status == MatchRunStatus.queued.value,
+                    )
+                )
+                .values(status=MatchRunStatus.running.value, updated_at=utc_now())
+            )
+            session.commit()
+            return bool(result.rowcount)
 
     def set_apply_run_status(
         self, *, run_id: str, status: MatchRunStatus, error: str | None = None
@@ -318,7 +376,7 @@ class JobIntelStore:
                 return
             row.status = status.value
             row.error = error
-            row.updated_at = datetime.utcnow()
+            row.updated_at = utc_now()
             session.commit()
 
     def get_apply_run_request(self, run_id: str) -> ApplyRunRequest:
@@ -375,8 +433,8 @@ class JobIntelStore:
                     external_job_id=attempt.external_job_id,
                     job_url=attempt.job_url,
                     status=attempt.status.value,
-                    created_at=datetime.utcnow(),
-                    updated_at=datetime.utcnow(),
+                    created_at=utc_now(),
+                    updated_at=utc_now(),
                 )
                 session.add(row)
 
@@ -386,7 +444,7 @@ class JobIntelStore:
             row.failure_code = attempt.failure_code.value if attempt.failure_code else None
             row.failure_reason = attempt.failure_reason
             row.submitted_at = attempt.submitted_at
-            row.updated_at = datetime.utcnow()
+            row.updated_at = utc_now()
 
             existing_artifacts = session.scalars(
                 select(ArtifactRefRow).where(ArtifactRefRow.attempt_id == attempt.attempt_id)
@@ -402,7 +460,7 @@ class JobIntelStore:
                         kind=artifact.kind,
                         url=artifact.url,
                         expires_at=artifact.expires_at,
-                        created_at=datetime.utcnow(),
+                        created_at=utc_now(),
                     )
                 )
             session.commit()
@@ -504,7 +562,7 @@ class CallbackEmitter:
             return
 
         body = payload.model_dump_json().encode("utf-8")
-        timestamp = str(int(datetime.utcnow().timestamp()))
+        timestamp = str(utc_epoch_seconds())
         nonce = str(uuid4())
         signature = create_body_signature(
             body=body,
@@ -552,8 +610,10 @@ class MatchingService:
     def __init__(self, *, store: JobIntelStore) -> None:
         self.store = store
 
-    async def execute(self, run_id: str) -> None:
-        self.store.set_match_run_status(run_id=run_id, status=MatchRunStatus.running)
+    async def execute(self, run_id: str, *, assume_claimed: bool = False) -> None:
+        if not assume_claimed and not self.store.claim_match_run(run_id):
+            logger.info("match_run_not_claimed", extra={"run_id": run_id})
+            return
         try:
             request = self.store.get_match_run_request(run_id)
             interests = [str(item).lower() for item in request.preferences.get("interests", [])]
@@ -856,7 +916,7 @@ class SimulatedApplyExecutor:
         digest = hashlib.sha256(attempt.job_url.encode("utf-8")).hexdigest()
         selector = int(digest[:2], 16)
 
-        expires = datetime.utcnow() + timedelta(days=7)
+        expires = utc_now() + timedelta(days=7)
         artifacts = [
             ArtifactRef(
                 kind="screenshot",
@@ -874,7 +934,7 @@ class SimulatedApplyExecutor:
             return attempt.model_copy(
                 update={
                     "status": ApplyAttemptStatus.succeeded,
-                    "submitted_at": datetime.utcnow(),
+                    "submitted_at": utc_now(),
                     "artifacts": artifacts,
                     "failure_code": None,
                     "failure_reason": None,
@@ -986,7 +1046,7 @@ class PlaywrightApplyExecutor:
                 }
             )
 
-        expires = datetime.utcnow() + timedelta(days=7)
+        expires = utc_now() + timedelta(days=7)
         artifacts = [
             ArtifactRef(
                 kind="html",
@@ -1006,7 +1066,7 @@ class PlaywrightApplyExecutor:
         return attempt.model_copy(
             update={
                 "status": ApplyAttemptStatus.succeeded,
-                "submitted_at": datetime.utcnow(),
+                "submitted_at": utc_now(),
                 "failure_code": None,
                 "failure_reason": None,
                 "artifacts": artifacts,
@@ -1037,8 +1097,10 @@ class ApplyService:
                 logger.exception("playwright_executor_init_failed")
         return SimulatedApplyExecutor()
 
-    async def execute(self, run_id: str) -> None:
-        self.store.set_apply_run_status(run_id=run_id, status=MatchRunStatus.running)
+    async def execute(self, run_id: str, *, assume_claimed: bool = False) -> None:
+        if not assume_claimed and not self.store.claim_apply_run(run_id):
+            logger.info("apply_run_not_claimed", extra={"run_id": run_id})
+            return
         try:
             request = self.store.get_apply_run_request(run_id)
             attempts = self.store.list_apply_attempts(run_id)

@@ -4,11 +4,13 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Protocol
+from typing import Any, Callable, Dict, List
 from uuid import uuid4
 
 from sqlalchemy import and_, func, not_, or_, select
 from sqlalchemy.orm import Session
+
+from common.time import utc_now
 
 from .cloud_client import CloudAutomationClient
 from .db_models import (
@@ -23,7 +25,6 @@ from .db_models import (
     WebhookEventRow,
 )
 from .models import (
-    AgentRunRequest,
     ApplicationProfileResponse,
     ApplicationProfileUpsertRequest,
     ApplyAttemptCallback,
@@ -62,17 +63,6 @@ from .security import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-class ApplicationStore(Protocol):
-    def upsert_for_user(self, user_id: str, record: ApplicationRecord) -> ApplicationRecord:
-        ...
-
-    def list_for_user(self, user_id: str) -> List[ApplicationRecord]:
-        ...
-
-    def list_all(self) -> List[ApplicationRecord]:
-        ...
 
 
 class PostgresStore:
@@ -485,117 +475,6 @@ class PostgresStore:
             notified_at=row.notified_at,
         )
 
-
-class OpportunityAgent:
-    """Simple deterministic mock agent for discovery + apply pipeline.
-
-    Replace the mock methods with real providers for:
-      - internet search (SerpAPI, Tavily, Bing, etc.)
-      - automated applications (Playwright/RPA with guardrails)
-      - contact enrichment (Apollo/Clearbit/LinkedIn API)
-      - notifications (email/slack/sms)
-    """
-
-    def __init__(self, store: ApplicationStore) -> None:
-        self.store = store
-        logger.debug("opportunity_agent_initialized")
-
-    def run(self, *, user_id: str, request: AgentRunRequest) -> List[ApplicationRecord]:
-        logger.info(
-            "agent_run_started",
-            extra={
-                "user_id": user_id,
-                "max_opportunities": request.max_opportunities,
-                "interest_count": len(request.profile.interests),
-            },
-        )
-        opportunities = self._discover(request)
-        records: List[ApplicationRecord] = []
-
-        for idx, opp in enumerate(opportunities, start=1):
-            logger.debug(
-                "agent_processing_opportunity",
-                extra={
-                    "step_index": idx,
-                    "opportunity_id": opp.id,
-                    "company": opp.company,
-                },
-            )
-            applied_record = self._apply(opp)
-            enriched_record = self._find_point_of_contact(applied_record)
-            notified_record = self._notify(enriched_record)
-            records.append(self.store.upsert_for_user(user_id, notified_record))
-
-        logger.info("agent_run_completed", extra={"generated_records": len(records)})
-        return records
-
-    def _discover(self, request: AgentRunRequest) -> List[Opportunity]:
-        logger.debug(
-            "agent_discover_started",
-            extra={"max_opportunities": request.max_opportunities},
-        )
-        interests = ", ".join(request.profile.interests)
-        opportunities = []
-
-        for idx in range(request.max_opportunities):
-            opportunities.append(
-                Opportunity(
-                    id=str(uuid4()),
-                    title=f"{request.profile.interests[idx % len(request.profile.interests)].title()} Fellow",
-                    company=f"Novel Labs {idx + 1}",
-                    url=f"https://example.com/jobs/{idx + 1}",
-                    reason=(
-                        f"Matched resume with interests ({interests}) and found a novel role "
-                        "with high skills overlap."
-                    ),
-                )
-            )
-
-        logger.debug(
-            "agent_discover_completed", extra={"discovered_count": len(opportunities)}
-        )
-        return opportunities
-
-    def _apply(self, opportunity: Opportunity) -> ApplicationRecord:
-        record = ApplicationRecord(
-            id=str(uuid4()),
-            opportunity=opportunity,
-            status=ApplicationStatus.applied,
-            submitted_at=datetime.utcnow(),
-        )
-        logger.debug(
-            "agent_apply_completed",
-            extra={
-                "application_id": record.id,
-                "opportunity_id": opportunity.id,
-            },
-        )
-        return record
-
-    def _find_point_of_contact(self, record: ApplicationRecord) -> ApplicationRecord:
-        contact = Contact(
-            name=f"Recruiter for {record.opportunity.company}",
-            email=f"recruiting@{record.opportunity.company.lower().replace(' ', '')}.com",
-            role="Talent Acquisition",
-            source="Company careers page",
-        )
-        record.contact = contact
-        logger.debug(
-            "agent_contact_enriched",
-            extra={
-                "application_id": record.id,
-                "contact_source": contact.source,
-            },
-        )
-        return record
-
-    def _notify(self, record: ApplicationRecord) -> ApplicationRecord:
-        record.status = ApplicationStatus.notified
-        record.notified_at = datetime.utcnow()
-        logger.debug("agent_notify_completed", extra={"application_id": record.id})
-        return record
-
-
 def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=True, separators=(",", ":"), default=str)
 
@@ -761,7 +640,7 @@ class MainPlatformStore:
         return email.strip().lower()
 
     def upsert_user(self, user_id: str, payload: UserUpsertRequest) -> UserResponse:
-        now = datetime.utcnow()
+        now = utc_now()
         with self._session_factory() as session:
             row = session.get(UserRow, user_id)
             if row is None:
@@ -795,7 +674,7 @@ class MainPlatformStore:
     def set_user_password(
         self, *, user_id: str, password_salt: str, password_hash: str
     ) -> None:
-        now = datetime.utcnow()
+        now = utc_now()
         with self._session_factory() as session:
             row = session.get(UserRow, user_id)
             if row is None:
@@ -829,7 +708,7 @@ class MainPlatformStore:
     def upsert_preferences(
         self, user_id: str, payload: PreferenceUpsertRequest
     ) -> PreferenceResponse:
-        now = datetime.utcnow()
+        now = utc_now()
         with self._session_factory() as session:
             row = session.get(UserPreferenceRow, user_id)
             if row is None:
@@ -861,7 +740,7 @@ class MainPlatformStore:
     def upsert_application_profile(
         self, user_id: str, payload: ApplicationProfileUpsertRequest
     ) -> ApplicationProfileResponse:
-        now = datetime.utcnow()
+        now = utc_now()
         with self._session_factory() as session:
             row = session.get(UserApplicationProfileRow, user_id)
             if row is None:
@@ -923,7 +802,7 @@ class MainPlatformStore:
             return self._to_application_profile(row)
 
     def upsert_resume(self, user_id: str, payload: ResumeUpsertRequest) -> ResumeResponse:
-        now = datetime.utcnow()
+        now = utc_now()
         sanitized_filename = payload.filename.replace("\x00", "").strip()
         if not sanitized_filename:
             raise ValueError("Resume filename is required")
@@ -994,7 +873,7 @@ class MainPlatformStore:
         status: MatchRunStatus,
         request_payload: Dict[str, Any],
     ) -> None:
-        now = datetime.utcnow()
+        now = utc_now()
         with self._session_factory() as session:
             row = session.scalar(
                 select(ExternalRunRefRow).where(
@@ -1044,7 +923,7 @@ class MainPlatformStore:
         status: MatchRunStatus,
         latest_response: Dict[str, Any],
     ) -> None:
-        now = datetime.utcnow()
+        now = utc_now()
         with self._session_factory() as session:
             row = session.scalar(
                 select(ExternalRunRefRow).where(
@@ -1091,7 +970,7 @@ class MainPlatformStore:
                         reason=match.reason,
                         score=match.score,
                         posted_at=match.posted_at,
-                        created_at=datetime.utcnow(),
+                        created_at=utc_now(),
                     )
                 )
             session.commit()
@@ -1135,7 +1014,7 @@ class MainPlatformStore:
     def upsert_application_attempt(
         self, *, user_id: str, external_run_id: str, attempt: ApplyAttemptResult
     ) -> None:
-        now = datetime.utcnow()
+        now = utc_now()
         with self._session_factory() as session:
             row = session.get(ApplicationAttemptRow, attempt.attempt_id)
             if row is None:
@@ -1179,11 +1058,6 @@ class MainPlatformStore:
             ).all()
             return [self._to_apply_attempt(row) for row in rows]
 
-    def webhook_event_exists(self, *, idempotency_key: str) -> bool:
-        with self._session_factory() as session:
-            row = session.get(WebhookEventRow, idempotency_key)
-            return row is not None
-
     def create_webhook_event(
         self,
         *,
@@ -1203,7 +1077,7 @@ class MainPlatformStore:
                     event_type=event_type,
                     external_run_id=external_run_id,
                     payload_hash=payload_hash,
-                    received_at=datetime.utcnow(),
+                    received_at=utc_now(),
                 )
             )
             session.commit()
@@ -1214,7 +1088,7 @@ class MainPlatformStore:
             row = session.get(WebhookEventRow, idempotency_key)
             if row is None:
                 return
-            row.processed_at = datetime.utcnow()
+            row.processed_at = utc_now()
             session.commit()
 
     @staticmethod

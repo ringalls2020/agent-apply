@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
+import { getAuthToken } from "@/lib/authToken";
+
 type RequireAuthResult = {
   isCheckingAuth: boolean;
   isAuthenticated: boolean;
@@ -14,7 +16,7 @@ export function useRequireAuth(): RequireAuthResult {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
 
   useEffect(() => {
-    const token = localStorage.getItem("agent_apply_token")?.trim();
+    const token = getAuthToken();
     if (!token) {
       setIsAuthenticated(false);
       setIsCheckingAuth(false);

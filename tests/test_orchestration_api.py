@@ -82,8 +82,24 @@ def test_client() -> Iterator[TestClient]:
         yield client
 
 
-def _seed_user(client: TestClient, user_id: str = "user-1") -> None:
-    user_payload = {"full_name": "Jane Doe", "email": "jane@example.com"}
+def _auth_headers(token: str) -> dict[str, str]:
+    return {"authorization": f"Bearer {token}"}
+
+
+def _seed_user(client: TestClient) -> tuple[str, str]:
+    signup = client.post(
+        "/v1/auth/signup",
+        json={
+            "full_name": "Jane Doe",
+            "email": "jane@example.com",
+            "password": "strong-password",
+        },
+    )
+    assert signup.status_code == 201
+    body = signup.json()
+    user_id = body["user"]["id"]
+    token = body["token"]
+
     pref_payload = {
         "interests": ["backend", "python"],
         "locations": ["United States"],
@@ -95,19 +111,27 @@ def _seed_user(client: TestClient, user_id: str = "user-1") -> None:
         "resume_text": "Python backend engineer with FastAPI and SQLAlchemy.",
     }
 
-    assert client.put(f"/v1/users/{user_id}", json=user_payload).status_code == 200
-    assert client.put(f"/v1/users/{user_id}/preferences", json=pref_payload).status_code == 200
-    assert client.put(f"/v1/users/{user_id}/resume", json=resume_payload).status_code == 200
+    headers = _auth_headers(token)
+    assert client.put(f"/v1/users/{user_id}/preferences", json=pref_payload, headers=headers).status_code == 200
+    assert client.put(f"/v1/users/{user_id}/resume", json=resume_payload, headers=headers).status_code == 200
+    return user_id, token
 
 
 def test_match_run_flow_round_trip(test_client: TestClient) -> None:
-    _seed_user(test_client)
+    user_id, token = _seed_user(test_client)
 
-    start_response = test_client.post("/v1/users/user-1/match-runs", json={"limit": 10})
+    start_response = test_client.post(
+        f"/v1/users/{user_id}/match-runs",
+        json={"limit": 10},
+        headers=_auth_headers(token),
+    )
     assert start_response.status_code == 200
     assert start_response.json()["run_id"] == "match-run-1"
 
-    status_response = test_client.get("/v1/users/user-1/match-runs/match-run-1")
+    status_response = test_client.get(
+        f"/v1/users/{user_id}/match-runs/match-run-1",
+        headers=_auth_headers(token),
+    )
     assert status_response.status_code == 200
     body = status_response.json()
     assert body["status"] == "completed"
@@ -116,19 +140,20 @@ def test_match_run_flow_round_trip(test_client: TestClient) -> None:
 
 
 def test_apply_run_daily_cap_is_enforced(test_client: TestClient) -> None:
-    _seed_user(test_client)
+    user_id, token = _seed_user(test_client)
     test_client.put(
-        "/v1/users/user-1/preferences",
+        f"/v1/users/{user_id}/preferences",
         json={
             "interests": ["backend"],
             "locations": ["United States"],
             "seniority": "mid",
             "applications_per_day": 1,
         },
+        headers=_auth_headers(token),
     )
 
     response = test_client.post(
-        "/v1/users/user-1/apply-runs",
+        f"/v1/users/{user_id}/apply-runs",
         json={
             "jobs": [
                 {
@@ -145,6 +170,7 @@ def test_apply_run_daily_cap_is_enforced(test_client: TestClient) -> None:
                 },
             ]
         },
+        headers=_auth_headers(token),
     )
 
     assert response.status_code == 400
@@ -152,13 +178,13 @@ def test_apply_run_daily_cap_is_enforced(test_client: TestClient) -> None:
 
 
 def test_signed_apply_callback_is_idempotent(test_client: TestClient) -> None:
-    _seed_user(test_client)
+    user_id, _token = _seed_user(test_client)
 
     payload = {
         "event_type": "apply.attempt.updated",
         "idempotency_key": "idem-1",
         "run_id": "apply-run-1",
-        "user_ref": "user-1",
+        "user_ref": user_id,
         "attempt": {
             "attempt_id": "attempt-callback-1",
             "external_job_id": "job-1",

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timedelta
+from datetime import timedelta
 from urllib.parse import urlparse
+
+from common.time import utc_now
 
 from cloud_automation.models import NormalizedJob
 
@@ -40,7 +42,7 @@ class SyntheticAdapter:
 
         host = urlparse(url).hostname or "jobs.example"
         company_name = host.split(".")[0].title()
-        posted_at = datetime.utcnow() - timedelta(hours=int(listing_id) % 72)
+        posted_at = utc_now() - timedelta(hours=int(listing_id) % 72)
 
         return NormalizedJob(
             id=f"{self.source_name}-{hashed}",
@@ -58,18 +60,3 @@ class SyntheticAdapter:
 
     def next_cursor(self) -> str | None:
         return str(self._cursor)
-
-
-def build_default_adapters() -> list[SyntheticAdapter]:
-    return [
-        SyntheticAdapter("linkedin"),
-        SyntheticAdapter("indeed"),
-        SyntheticAdapter("greenhouse"),
-        SyntheticAdapter("lever"),
-        SyntheticAdapter("workday"),
-        SyntheticAdapter("smartrecruiters"),
-        SyntheticAdapter("ashby"),
-        SyntheticAdapter("ziprecruiter"),
-        SyntheticAdapter("wellfound"),
-        SyntheticAdapter("careers"),
-    ]

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 
 import { Button } from "@/components/ui/Button";
+import { clearAuthToken } from "@/lib/authToken";
 import { cn } from "@/lib/cn";
 
 const navLinks = [
@@ -48,8 +49,7 @@ export function Nav() {
             variant="secondary"
             size="sm"
             onClick={() => {
-              localStorage.removeItem("agent_apply_token");
-              document.cookie = "agent_apply_token=; Path=/; Max-Age=0; SameSite=Lax";
+              clearAuthToken();
               router.push("/login");
             }}
           >

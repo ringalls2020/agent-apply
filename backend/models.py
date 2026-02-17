@@ -4,6 +4,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from common.time import utc_now
+
 
 class ApplicationStatus(str, Enum):
     discovered = "discovered"
@@ -21,7 +23,7 @@ class Opportunity(BaseModel):
     company: str
     url: str
     reason: str
-    discovered_at: datetime = Field(default_factory=datetime.utcnow)
+    discovered_at: datetime = Field(default_factory=utc_now)
 
 
 class Contact(BaseModel):
@@ -38,18 +40,6 @@ class ApplicationRecord(BaseModel):
     contact: Optional[Contact] = None
     submitted_at: Optional[datetime] = None
     notified_at: Optional[datetime] = None
-
-
-class CandidateProfile(BaseModel):
-    full_name: str
-    email: str
-    resume_text: str
-    interests: List[str] = Field(min_length=1)
-
-
-class AgentRunRequest(BaseModel):
-    profile: CandidateProfile
-    max_opportunities: int = Field(default=5, ge=1, le=25)
 
 
 class AgentRunResponse(BaseModel):
@@ -373,7 +363,7 @@ class ApplyAttemptCallback(BaseModel):
     run_id: str
     attempt: ApplyAttemptResult
     user_ref: str
-    emitted_at: datetime = Field(default_factory=datetime.utcnow)
+    emitted_at: datetime = Field(default_factory=utc_now)
 
 
 class CallbackAckResponse(BaseModel):

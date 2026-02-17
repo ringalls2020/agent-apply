@@ -1,6 +1,6 @@
 "use client";
 
-import { ApolloProvider, useMutation, useQuery } from "@apollo/client";
+import { useMutation, useQuery } from "@apollo/client";
 import { useState } from "react";
 
 import { AppShell } from "@/components/layout/AppShell";
@@ -9,7 +9,6 @@ import { Card } from "@/components/ui/Card";
 import { InlineAlert } from "@/components/ui/InlineAlert";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { ME, UPLOAD_RESUME } from "@/graphql/operations";
-import { getClient } from "@/lib/apollo";
 import { useRequireAuth } from "@/lib/useRequireAuth";
 
 type MeQuery = {
@@ -56,7 +55,7 @@ function ResumeInner() {
         <label className="relative flex cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed border-accent/45 bg-accent/5 p-7 text-center transition duration-250 hover:bg-accent/10 focus-within:ring-2 focus-within:ring-accent/40">
           <input
             type="file"
-            accept=".txt,.md,.pdf,.doc,.docx"
+            accept=".txt,.md"
             className="absolute inset-0 cursor-pointer opacity-0"
             onChange={async (event) => {
               const file = event.target.files?.[0];
@@ -79,7 +78,7 @@ function ResumeInner() {
           />
 
           <p className="text-sm font-semibold text-accentSoft">Drop a resume file or click to browse</p>
-          <p className="mt-1 text-xs text-muted">Accepted formats: .txt, .md, .pdf, .doc, .docx</p>
+          <p className="mt-1 text-xs text-muted">Accepted formats: .txt, .md</p>
         </label>
 
         <div className="rounded-xl2 border border-border/80 bg-surfaceAlt/55 p-4">
@@ -96,9 +95,5 @@ function ResumeInner() {
 }
 
 export default function ResumePage() {
-  return (
-    <ApolloProvider client={getClient()}>
-      <ResumeInner />
-    </ApolloProvider>
-  );
+  return <ResumeInner />;
 }

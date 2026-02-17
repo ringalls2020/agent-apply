@@ -1,5 +1,6 @@
 import logging
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter, sleep
@@ -10,6 +11,12 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from .cloud_client import CloudAutomationClient, CloudClientError
+from .auth import (
+    authenticated_user_id_from_request,
+    create_user_access_token,
+    extract_bearer_token,
+    require_user_id_match,
+)
 from .db import (
     Base,
     create_db_engine,
@@ -56,7 +63,6 @@ from .models import (
 )
 from .security import (
     SecurityError,
-    create_hs256_jwt,
     hash_password,
     validate_profile_encryption_config,
     verify_body_signature,
@@ -67,11 +73,13 @@ from .services import (
     MainPlatformStore,
     PostgresStore,
 )
+from common.time import utc_now
 
 templates = Jinja2Templates(
     directory=str(Path(__file__).resolve().parent / "templates")
 )
 logger = logging.getLogger(__name__)
+_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 
 def _parse_int_env(name: str, default: int) -> int:
@@ -84,19 +92,11 @@ def _parse_int_env(name: str, default: int) -> int:
         return default
 
 
-def _extract_bearer_token(auth_header: str | None) -> str:
-    if not auth_header:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing Authorization header",
-        )
-    parts = auth_header.strip().split(" ", 1)
-    if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1].strip():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid Authorization header",
-        )
-    return parts[1].strip()
+def _parse_bool_env(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in _TRUE_VALUES
 
 
 def create_app(
@@ -115,7 +115,22 @@ def create_app(
     engine = create_db_engine(resolved_database_url)
     session_factory = create_session_factory(engine)
 
-    fastapi_app = FastAPI(title="Agent Apply", version="0.2.0")
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        logger.info("db_schema_initialization_started")
+        Base.metadata.create_all(bind=app.state.engine)
+        logger.info("db_schema_initialization_completed")
+        try:
+            yield
+        finally:
+            close_cloud_client = getattr(app.state.cloud_client, "close", None)
+            if callable(close_cloud_client):
+                close_cloud_client()
+            logger.info("db_engine_disposal_started")
+            app.state.engine.dispose()
+            logger.info("db_engine_disposal_completed")
+
+    fastapi_app = FastAPI(title="Agent Apply", version="0.2.0", lifespan=lifespan)
     fastapi_app.state.engine = engine
 
     # Legacy application records store (used for /v1/applications).
@@ -157,38 +172,12 @@ def create_app(
     fastapi_app.state.user_auth_token_ttl_seconds = max(
         1, _parse_int_env("USER_AUTH_TOKEN_TTL_SECONDS", 7 * 24 * 60 * 60)
     )
-
-    def _create_user_access_token(user_id: str) -> str:
-        return create_hs256_jwt(
-            payload={"sub": user_id},
-            secret=fastapi_app.state.user_auth_signing_secret,
-            issuer=fastapi_app.state.user_auth_issuer,
-            audience=fastapi_app.state.user_auth_audience,
-            expires_in_seconds=fastapi_app.state.user_auth_token_ttl_seconds,
-        )
-
-    def _authenticated_user_id_from_request(request: Request) -> str:
-        token = _extract_bearer_token(request.headers.get("authorization"))
-        try:
-            claims = verify_hs256_jwt(
-                token=token,
-                secret=fastapi_app.state.user_auth_signing_secret,
-                audience=fastapi_app.state.user_auth_audience,
-                issuer=fastapi_app.state.user_auth_issuer,
-            )
-        except SecurityError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Invalid user auth token: {exc}",
-            ) from exc
-
-        user_id = str(claims.get("sub", "")).strip()
-        if not user_id:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User auth token missing subject",
-            )
-        return user_id
+    admin_enabled_default = app_env in {"dev", "development", "local", "test"}
+    fastapi_app.state.admin_enabled = _parse_bool_env(
+        "ENABLE_ADMIN_DASHBOARD",
+        default=admin_enabled_default,
+    )
+    fastapi_app.state.admin_secret = os.getenv("ADMIN_DASHBOARD_SECRET", "").strip()
 
     def _build_auth_user_profile(user_id: str) -> AuthUserProfile:
         user = fastapi_app.state.main_store.get_user(user_id)
@@ -209,14 +198,6 @@ def create_app(
             resume_filename=resume.filename if resume else None,
             autosubmit_enabled=profile.autosubmit_enabled if profile else False,
         )
-
-    def _authenticated_user_id_must_match(request: Request, user_id: str) -> None:
-        authenticated_user_id = _authenticated_user_id_from_request(request)
-        if authenticated_user_id != user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Cannot access another user's profile",
-            )
 
     @fastapi_app.middleware("http")
     async def request_logging_middleware(request: Request, call_next):
@@ -260,12 +241,6 @@ def create_app(
         finally:
             reset_request_logging_context(context_tokens)
 
-    @fastapi_app.on_event("startup")
-    def init_db_schema() -> None:
-        logger.info("db_schema_initialization_started")
-        Base.metadata.create_all(bind=fastapi_app.state.engine)
-        logger.info("db_schema_initialization_completed")
-
     @fastapi_app.get("/health")
     def health() -> dict:
         logger.debug("health_checked")
@@ -291,7 +266,7 @@ def create_app(
         response_model=AuthResponse,
         status_code=status.HTTP_201_CREATED,
     )
-    def auth_signup(payload: AuthSignupRequest) -> AuthResponse:
+    def auth_signup(payload: AuthSignupRequest, request: Request) -> AuthResponse:
         existing_user = fastapi_app.state.main_store.get_user_by_email(payload.email)
         if existing_user is not None:
             raise HTTPException(
@@ -315,12 +290,12 @@ def create_app(
         )
 
         return AuthResponse(
-            token=_create_user_access_token(user.id),
+            token=create_user_access_token(request, user.id),
             user=_build_auth_user_profile(user.id),
         )
 
     @fastapi_app.post("/v1/auth/login", response_model=AuthResponse)
-    def auth_login(payload: AuthLoginRequest) -> AuthResponse:
+    def auth_login(payload: AuthLoginRequest, request: Request) -> AuthResponse:
         user = fastapi_app.state.main_store.verify_user_credentials(
             email=payload.email,
             password=payload.password,
@@ -331,18 +306,18 @@ def create_app(
                 detail="Invalid credentials.",
             )
         return AuthResponse(
-            token=_create_user_access_token(user.id),
+            token=create_user_access_token(request, user.id),
             user=_build_auth_user_profile(user.id),
         )
 
     @fastapi_app.get("/v1/auth/me", response_model=AuthUserProfile)
     def auth_me(request: Request) -> AuthUserProfile:
-        user_id = _authenticated_user_id_from_request(request)
+        user_id = authenticated_user_id_from_request(request)
         return _build_auth_user_profile(user_id)
 
     @fastapi_app.post("/v1/agent/run", response_model=AgentRunResponse)
     def run_agent_for_authenticated_user(request: Request) -> AgentRunResponse:
-        user_id = _authenticated_user_id_from_request(request)
+        user_id = authenticated_user_id_from_request(request)
         preferences = fastapi_app.state.main_store.get_preferences(user_id)
         if preferences is None or not preferences.interests:
             raise HTTPException(
@@ -421,7 +396,7 @@ def create_app(
                 detail=latest_status.error or "Match run failed",
             )
 
-        now = datetime.utcnow()
+        now = utc_now()
         applications: list[ApplicationRecord] = []
         for match in latest_status.results:
             record = ApplicationRecord(
@@ -484,7 +459,7 @@ def create_app(
 
     @fastapi_app.get("/v1/applications", response_model=AgentRunResponse)
     def list_user_applications(request: Request) -> AgentRunResponse:
-        user_id = _authenticated_user_id_from_request(request)
+        user_id = authenticated_user_id_from_request(request)
         user = fastapi_app.state.main_store.get_user(user_id)
         if user is None:
             raise HTTPException(
@@ -509,7 +484,7 @@ def create_app(
         limit: int = 25,
         offset: int = 0,
     ) -> ApplicationsSearchResponse:
-        user_id = _authenticated_user_id_from_request(request)
+        user_id = authenticated_user_id_from_request(request)
 
         allowed_sort_by = {"discovered_at", "company", "status"}
         if sort_by not in allowed_sort_by:
@@ -574,7 +549,7 @@ def create_app(
         payload: BulkApplyRequest,
         request: Request,
     ) -> BulkApplyResponse:
-        user_id = _authenticated_user_id_from_request(request)
+        user_id = authenticated_user_id_from_request(request)
         normalized_ids: list[str] = []
         seen_ids: set[str] = set()
         for raw_id in payload.application_ids:
@@ -675,7 +650,7 @@ def create_app(
         response_model=ApplicationRecord,
     )
     def mark_application_viewed(application_id: str, request: Request) -> ApplicationRecord:
-        user_id = _authenticated_user_id_from_request(request)
+        user_id = authenticated_user_id_from_request(request)
         application = fastapi_app.state.store.mark_viewed_for_user_application(
             user_id=user_id,
             application_id=application_id,
@@ -692,11 +667,11 @@ def create_app(
         response_model=ApplicationRecord,
     )
     def mark_application_applied(application_id: str, request: Request) -> ApplicationRecord:
-        user_id = _authenticated_user_id_from_request(request)
+        user_id = authenticated_user_id_from_request(request)
         application = fastapi_app.state.store.mark_applied_for_user_application(
             user_id=user_id,
             application_id=application_id,
-            submitted_at=datetime.utcnow(),
+            submitted_at=utc_now(),
         )
         if application is None:
             raise HTTPException(
@@ -707,6 +682,14 @@ def create_app(
 
     @fastapi_app.get("/admin", response_class=HTMLResponse)
     def admin_dashboard(request: Request) -> HTMLResponse:
+        if not fastapi_app.state.admin_enabled:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+        if fastapi_app.state.admin_secret:
+            if request.headers.get("x-admin-secret", "").strip() != fastapi_app.state.admin_secret:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Admin secret mismatch",
+                )
         apps = fastapi_app.state.store.list_all()
         stats = {
             "total": len(apps),
@@ -729,18 +712,25 @@ def create_app(
 
     # New system-of-record routes.
     @fastapi_app.put("/v1/users/{user_id}", response_model=UserResponse)
-    def upsert_user(user_id: str, payload: UserUpsertRequest) -> UserResponse:
+    def upsert_user(user_id: str, payload: UserUpsertRequest, request: Request) -> UserResponse:
+        require_user_id_match(request, user_id)
         return fastapi_app.state.orchestrator.upsert_user(user_id=user_id, payload=payload)
 
     @fastapi_app.get("/v1/users/{user_id}", response_model=UserResponse)
-    def get_user(user_id: str) -> UserResponse:
+    def get_user(user_id: str, request: Request) -> UserResponse:
+        require_user_id_match(request, user_id)
         user = fastapi_app.state.orchestrator.get_user(user_id)
         if user is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
         return user
 
     @fastapi_app.put("/v1/users/{user_id}/preferences", response_model=PreferenceResponse)
-    def upsert_preferences(user_id: str, payload: PreferenceUpsertRequest) -> PreferenceResponse:
+    def upsert_preferences(
+        user_id: str,
+        payload: PreferenceUpsertRequest,
+        request: Request,
+    ) -> PreferenceResponse:
+        require_user_id_match(request, user_id)
         try:
             return fastapi_app.state.orchestrator.upsert_preferences(
                 user_id=user_id,
@@ -750,7 +740,8 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     @fastapi_app.get("/v1/users/{user_id}/preferences", response_model=PreferenceResponse)
-    def get_preferences(user_id: str) -> PreferenceResponse:
+    def get_preferences(user_id: str, request: Request) -> PreferenceResponse:
+        require_user_id_match(request, user_id)
         preferences = fastapi_app.state.orchestrator.get_preferences(user_id)
         if preferences is None:
             raise HTTPException(
@@ -760,7 +751,12 @@ def create_app(
         return preferences
 
     @fastapi_app.put("/v1/users/{user_id}/resume", response_model=ResumeResponse)
-    def upsert_resume(user_id: str, payload: ResumeUpsertRequest) -> ResumeResponse:
+    def upsert_resume(
+        user_id: str,
+        payload: ResumeUpsertRequest,
+        request: Request,
+    ) -> ResumeResponse:
+        require_user_id_match(request, user_id)
         try:
             return fastapi_app.state.orchestrator.upsert_resume(user_id=user_id, payload=payload)
         except ValueError as exc:
@@ -773,7 +769,8 @@ def create_app(
             raise HTTPException(status_code=status_code, detail=detail) from exc
 
     @fastapi_app.get("/v1/users/{user_id}/resume", response_model=ResumeResponse)
-    def get_resume(user_id: str) -> ResumeResponse:
+    def get_resume(user_id: str, request: Request) -> ResumeResponse:
+        require_user_id_match(request, user_id)
         resume = fastapi_app.state.orchestrator.get_resume(user_id)
         if resume is None:
             raise HTTPException(
@@ -791,7 +788,7 @@ def create_app(
         payload: ApplicationProfileUpsertRequest,
         request: Request,
     ) -> ApplicationProfileResponse:
-        _authenticated_user_id_must_match(request, user_id)
+        require_user_id_match(request, user_id)
         try:
             return fastapi_app.state.orchestrator.upsert_application_profile(
                 user_id=user_id,
@@ -805,14 +802,19 @@ def create_app(
         response_model=ApplicationProfileResponse,
     )
     def get_application_profile(user_id: str, request: Request) -> ApplicationProfileResponse:
-        _authenticated_user_id_must_match(request, user_id)
+        require_user_id_match(request, user_id)
         profile = fastapi_app.state.orchestrator.get_application_profile(user_id)
         if profile is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
         return profile
 
     @fastapi_app.post("/v1/users/{user_id}/match-runs", response_model=MatchRunStartResponse)
-    def start_match_run(user_id: str, payload: MatchRunStartRequest) -> MatchRunStartResponse:
+    def start_match_run(
+        user_id: str,
+        payload: MatchRunStartRequest,
+        request: Request,
+    ) -> MatchRunStartResponse:
+        require_user_id_match(request, user_id)
         try:
             return fastapi_app.state.orchestrator.start_match_run(
                 user_id=user_id,
@@ -827,7 +829,8 @@ def create_app(
         "/v1/users/{user_id}/match-runs/{run_id}",
         response_model=MatchRunStatusResponse,
     )
-    def get_match_run(user_id: str, run_id: str) -> MatchRunStatusResponse:
+    def get_match_run(user_id: str, run_id: str, request: Request) -> MatchRunStatusResponse:
+        require_user_id_match(request, user_id)
         try:
             return fastapi_app.state.orchestrator.get_match_run(user_id=user_id, run_id=run_id)
         except ValueError as exc:
@@ -836,7 +839,12 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
     @fastapi_app.post("/v1/users/{user_id}/apply-runs", response_model=ApplyRunStartResponse)
-    def start_apply_run(user_id: str, payload: ApplyRunStartRequest) -> ApplyRunStartResponse:
+    def start_apply_run(
+        user_id: str,
+        payload: ApplyRunStartRequest,
+        request: Request,
+    ) -> ApplyRunStartResponse:
+        require_user_id_match(request, user_id)
         try:
             return fastapi_app.state.orchestrator.start_apply_run(
                 user_id=user_id,
@@ -851,7 +859,8 @@ def create_app(
         "/v1/users/{user_id}/apply-runs/{run_id}",
         response_model=ApplyRunStatusResponse,
     )
-    def get_apply_run(user_id: str, run_id: str) -> ApplyRunStatusResponse:
+    def get_apply_run(user_id: str, run_id: str, request: Request) -> ApplyRunStatusResponse:
+        require_user_id_match(request, user_id)
         try:
             return fastapi_app.state.orchestrator.get_apply_run(user_id=user_id, run_id=run_id)
         except ValueError as exc:
@@ -886,7 +895,7 @@ def create_app(
                 )
 
         try:
-            token = _extract_bearer_token(auth_header)
+            token = extract_bearer_token(auth_header)
             verify_hs256_jwt(
                 token=token,
                 secret=fastapi_app.state.callback_signing_secret,
@@ -963,12 +972,6 @@ def create_app(
             idempotency_key=idempotency_key
         )
         return CallbackAckResponse(accepted=True, idempotency_key=idempotency_key)
-
-    @fastapi_app.on_event("shutdown")
-    def dispose_db_engine() -> None:
-        logger.info("db_engine_disposal_started")
-        fastapi_app.state.engine.dispose()
-        logger.info("db_engine_disposal_completed")
 
     logger.info("app_initialized")
 

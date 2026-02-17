@@ -108,7 +108,13 @@ def _signup_user(
     return response.json()
 
 
-def _seed_profile(client: TestClient, *, user_id: str, applications_per_day: int = 3) -> None:
+def _seed_profile(
+    client: TestClient,
+    *,
+    user_id: str,
+    token: str,
+    applications_per_day: int = 3,
+) -> None:
     preferences = {
         "interests": ["ai", "climate"],
         "locations": ["United States"],
@@ -119,8 +125,9 @@ def _seed_profile(client: TestClient, *, user_id: str, applications_per_day: int
         "resume_text": "ML engineer with automation and platform experience.",
     }
 
-    pref_response = client.put(f"/v1/users/{user_id}/preferences", json=preferences)
-    resume_response = client.put(f"/v1/users/{user_id}/resume", json=resume)
+    headers = _auth_headers(token)
+    pref_response = client.put(f"/v1/users/{user_id}/preferences", json=preferences, headers=headers)
+    resume_response = client.put(f"/v1/users/{user_id}/resume", json=resume, headers=headers)
 
     assert pref_response.status_code == 200
     assert resume_response.status_code == 200
@@ -183,6 +190,22 @@ def test_login_rejects_invalid_credentials(test_client: TestClient) -> None:
     assert login_response.json()["detail"] == "Invalid credentials."
 
 
+def test_user_routes_require_auth(test_client: TestClient) -> None:
+    user = _signup_user(test_client, full_name="Jane Auth", email="auth-required@example.com")
+    response = test_client.get(f"/v1/users/{user['user']['id']}")
+    assert response.status_code == 401
+
+
+def test_user_routes_require_subject_match(test_client: TestClient) -> None:
+    owner = _signup_user(test_client, full_name="Jane Owner", email="owner-auth@example.com")
+    other = _signup_user(test_client, full_name="Jane Other", email="other-auth@example.com")
+    response = test_client.get(
+        f"/v1/users/{owner['user']['id']}",
+        headers=_auth_headers(other["token"]),
+    )
+    assert response.status_code == 403
+
+
 def test_agent_run_requires_resume(test_client: TestClient) -> None:
     signup_body = _signup_user(
         test_client,
@@ -208,6 +231,7 @@ def test_resume_upload_sanitizes_nul_bytes(test_client: TestClient) -> None:
 
     response = test_client.put(
         f"/v1/users/{user_id}/resume",
+        headers=_auth_headers(signup_body["token"]),
         json={
             "filename": "resume.pdf",
             "resume_text": "header\x00body\x00tail",
@@ -229,6 +253,7 @@ def test_resume_upload_updates_preferences_from_resume_content(test_client: Test
 
     initial_preferences_response = test_client.put(
         f"/v1/users/{user_id}/preferences",
+        headers=_auth_headers(signup_body["token"]),
         json={
             "interests": ["cooking", "travel"],
             "locations": ["United States"],
@@ -239,6 +264,7 @@ def test_resume_upload_updates_preferences_from_resume_content(test_client: Test
 
     resume_response = test_client.put(
         f"/v1/users/{user_id}/resume",
+        headers=_auth_headers(signup_body["token"]),
         json={
             "filename": "resume.txt",
             "resume_text": (
@@ -249,7 +275,10 @@ def test_resume_upload_updates_preferences_from_resume_content(test_client: Test
     )
     assert resume_response.status_code == 200
 
-    preferences_response = test_client.get(f"/v1/users/{user_id}/preferences")
+    preferences_response = test_client.get(
+        f"/v1/users/{user_id}/preferences",
+        headers=_auth_headers(signup_body["token"]),
+    )
     assert preferences_response.status_code == 200
     preferences = preferences_response.json()
     interests = preferences["interests"]
@@ -277,6 +306,7 @@ def test_resume_upload_rejects_empty_after_sanitization(test_client: TestClient)
 
     response = test_client.put(
         f"/v1/users/{user_id}/resume",
+        headers=_auth_headers(signup_body["token"]),
         json={
             "filename": "resume.pdf",
             "resume_text": "\u0000\u0000\u0000",
@@ -291,7 +321,7 @@ def test_agent_run_and_list_applications_are_user_scoped(test_client: TestClient
     user_a = _signup_user(test_client, full_name="Jane A", email="a@example.com")
     user_b = _signup_user(test_client, full_name="Jane B", email="b@example.com")
 
-    _seed_profile(test_client, user_id=user_a["user"]["id"], applications_per_day=2)
+    _seed_profile(test_client, user_id=user_a["user"]["id"], token=user_a["token"], applications_per_day=2)
 
     run_response = test_client.post(
         "/v1/agent/run",
@@ -364,7 +394,7 @@ def test_profile_round_trip_and_owner_auth(test_client: TestClient) -> None:
 def test_agent_run_with_autosubmit_starts_apply_run(test_client: TestClient) -> None:
     user = _signup_user(test_client, full_name="Jane Auto", email="auto@example.com")
     user_id = user["user"]["id"]
-    _seed_profile(test_client, user_id=user_id, applications_per_day=2)
+    _seed_profile(test_client, user_id=user_id, token=user["token"], applications_per_day=2)
 
     profile_response = test_client.put(
         f"/v1/users/{user_id}/profile",
@@ -388,7 +418,7 @@ def test_agent_run_with_autosubmit_starts_apply_run(test_client: TestClient) -> 
 
 def test_mark_viewed_transitions_review_and_is_idempotent(test_client: TestClient) -> None:
     user = _signup_user(test_client, full_name="Jane Viewed", email="viewed@example.com")
-    _seed_profile(test_client, user_id=user["user"]["id"], applications_per_day=2)
+    _seed_profile(test_client, user_id=user["user"]["id"], token=user["token"], applications_per_day=2)
 
     run_response = test_client.post(
         "/v1/agent/run",
@@ -414,7 +444,7 @@ def test_mark_viewed_transitions_review_and_is_idempotent(test_client: TestClien
 
 def test_bulk_apply_accepts_review_and_viewed_statuses(test_client: TestClient) -> None:
     user = _signup_user(test_client, full_name="Jane Bulk", email="bulk@example.com")
-    _seed_profile(test_client, user_id=user["user"]["id"], applications_per_day=2)
+    _seed_profile(test_client, user_id=user["user"]["id"], token=user["token"], applications_per_day=2)
 
     run_response = test_client.post(
         "/v1/agent/run",
@@ -458,7 +488,7 @@ def test_bulk_apply_accepts_review_and_viewed_statuses(test_client: TestClient) 
 def test_mark_viewed_is_user_scoped(test_client: TestClient) -> None:
     owner = _signup_user(test_client, full_name="Jane Owner", email="owner@example.com")
     other = _signup_user(test_client, full_name="Jane Other", email="other-owner@example.com")
-    _seed_profile(test_client, user_id=owner["user"]["id"], applications_per_day=1)
+    _seed_profile(test_client, user_id=owner["user"]["id"], token=owner["token"], applications_per_day=1)
 
     run_response = test_client.post(
         "/v1/agent/run",
@@ -495,7 +525,7 @@ def test_legacy_application_endpoints_return_gone(test_client: TestClient) -> No
 
 def test_admin_dashboard_renders_html_and_stats(test_client: TestClient) -> None:
     user = _signup_user(test_client, full_name="Jane Doe", email="jane@example.com")
-    _seed_profile(test_client, user_id=user["user"]["id"], applications_per_day=2)
+    _seed_profile(test_client, user_id=user["user"]["id"], token=user["token"], applications_per_day=2)
 
     test_client.post(
         "/v1/agent/run",
@@ -510,3 +540,24 @@ def test_admin_dashboard_renders_html_and_stats(test_client: TestClient) -> None
     assert "Total Opportunities" in response.text
     assert "Applied" in response.text
     assert "Notified" in response.text
+
+
+def test_admin_dashboard_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ENABLE_ADMIN_DASHBOARD", "false")
+    monkeypatch.setenv("USER_PROFILE_ENCRYPTION_KEY", "test-profile-encryption-key")
+    app = create_app(database_url="sqlite+pysqlite:///:memory:", cloud_client=FakeCloudClient())
+    with TestClient(app) as client:
+        response = client.get("/admin")
+    assert response.status_code == 404
+
+
+def test_admin_dashboard_secret_is_enforced(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ENABLE_ADMIN_DASHBOARD", "true")
+    monkeypatch.setenv("ADMIN_DASHBOARD_SECRET", "top-secret")
+    monkeypatch.setenv("USER_PROFILE_ENCRYPTION_KEY", "test-profile-encryption-key")
+    app = create_app(database_url="sqlite+pysqlite:///:memory:", cloud_client=FakeCloudClient())
+    with TestClient(app) as client:
+        forbidden = client.get("/admin")
+        allowed = client.get("/admin", headers={"x-admin-secret": "top-secret"})
+    assert forbidden.status_code == 403
+    assert allowed.status_code == 200

@@ -1,6 +1,6 @@
 "use client";
 
-import { ApolloProvider, useMutation, useQuery } from "@apollo/client";
+import { useMutation, useQuery } from "@apollo/client";
 import { useEffect, useMemo, useState } from "react";
 
 import { AppShell } from "@/components/layout/AppShell";
@@ -11,7 +11,6 @@ import { FormField } from "@/components/ui/FormField";
 import { InlineAlert } from "@/components/ui/InlineAlert";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { PROFILE, UPDATE_PROFILE } from "@/graphql/operations";
-import { getClient } from "@/lib/apollo";
 import { cn } from "@/lib/cn";
 import { useRequireAuth } from "@/lib/useRequireAuth";
 
@@ -494,9 +493,5 @@ function ProfileInner() {
 }
 
 export default function ProfilePage() {
-  return (
-    <ApolloProvider client={getClient()}>
-      <ProfileInner />
-    </ApolloProvider>
-  );
+  return <ProfileInner />;
 }

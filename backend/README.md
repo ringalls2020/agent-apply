@@ -39,6 +39,8 @@ Legacy demo endpoints (`/agent/run`, `/applications`, `/admin`) are still presen
 - `PUT /v1/users/{user_id}/profile`
 - `GET /v1/users/{user_id}/profile`
 
+All `/v1/users/{user_id}/*` routes require a user bearer token and enforce `token.sub == {user_id}`.
+
 ### Cloud orchestration
 
 - `POST /v1/users/{user_id}/match-runs`
@@ -56,6 +58,14 @@ To avoid synthetic fallback listings, set `USE_ONLY_LIVE_ADAPTERS=true` in the c
 When `autosubmit_enabled=true` in the user profile, `/v1/agent/run` also starts async apply runs and application statuses progress via callback updates.
 
 Legacy routes `/agent/run` and `/applications` now return `410 Gone`.
+
+### Admin dashboard
+
+- `GET /admin`
+
+Admin dashboard is enabled by default in local/dev/test environments and disabled by default elsewhere.
+Set `ENABLE_ADMIN_DASHBOARD=true` to enable explicitly and optionally protect it with
+`ADMIN_DASHBOARD_SECRET` passed as `x-admin-secret`.
 
 ### Callback ingestion
 

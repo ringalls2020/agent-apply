@@ -59,22 +59,6 @@ export const UPLOAD_RESUME = gql`
   }
 `;
 
-export const APPLICATIONS = gql`
-  query Applications {
-    applications {
-      id
-      title
-      company
-      status
-      source
-      contactName
-      contactEmail
-      submittedAt
-      jobUrl
-    }
-  }
-`;
-
 export const RUN_AGENT = gql`
   mutation RunAgent {
     runAgent {

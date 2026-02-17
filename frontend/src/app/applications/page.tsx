@@ -1,6 +1,6 @@
 "use client";
 
-import { ApolloProvider, useMutation, useQuery } from "@apollo/client";
+import { useMutation, useQuery } from "@apollo/client";
 import { useEffect, useMemo, useState } from "react";
 
 import { AppShell } from "@/components/layout/AppShell";
@@ -21,7 +21,6 @@ import {
   ME,
   RUN_AGENT,
 } from "@/graphql/operations";
-import { getClient } from "@/lib/apollo";
 import { useRequireAuth } from "@/lib/useRequireAuth";
 
 type Application = {
@@ -775,9 +774,5 @@ function ApplicationsInner() {
 }
 
 export default function ApplicationsPage() {
-  return (
-    <ApolloProvider client={getClient()}>
-      <ApplicationsInner />
-    </ApolloProvider>
-  );
+  return <ApplicationsInner />;
 }

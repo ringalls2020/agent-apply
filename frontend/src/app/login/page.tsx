@@ -3,13 +3,13 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ApolloProvider, useMutation } from "@apollo/client";
+import { useMutation } from "@apollo/client";
 
 import { AuthShell } from "@/components/layout/AuthShell";
 import { Button } from "@/components/ui/Button";
 import { FormField } from "@/components/ui/FormField";
 import { InlineAlert } from "@/components/ui/InlineAlert";
-import { getClient } from "@/lib/apollo";
+import { setAuthToken } from "@/lib/authToken";
 import { LOGIN } from "@/graphql/operations";
 
 function LoginInner() {
@@ -36,8 +36,7 @@ function LoginInner() {
               setError("Could not login.");
               return;
             }
-            localStorage.setItem("agent_apply_token", token);
-            document.cookie = `agent_apply_token=${encodeURIComponent(token)}; Path=/; SameSite=Lax`;
+            setAuthToken(token);
             router.push("/applications");
           } catch (err: unknown) {
             setError(err instanceof Error ? err.message : "Could not login.");
@@ -83,9 +82,5 @@ function LoginInner() {
 }
 
 export default function LoginPage() {
-  return (
-    <ApolloProvider client={getClient()}>
-      <LoginInner />
-    </ApolloProvider>
-  );
+  return <LoginInner />;
 }

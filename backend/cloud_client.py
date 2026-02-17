@@ -33,6 +33,7 @@ class CloudClientSettings:
 class CloudAutomationClient:
     def __init__(self, settings: CloudClientSettings) -> None:
         self._settings = settings
+        self._client = httpx.Client(timeout=self._settings.timeout_seconds)
 
     @classmethod
     def from_env(cls) -> "CloudAutomationClient":
@@ -71,14 +72,13 @@ class CloudAutomationClient:
     ) -> Dict[str, Any]:
         url = f"{self._settings.base_url.rstrip('/')}{path}"
         try:
-            with httpx.Client(timeout=self._settings.timeout_seconds) as client:
-                response = client.request(
-                    method=method,
-                    url=url,
-                    json=json_body,
-                    params=params,
-                    headers=self._auth_headers(),
-                )
+            response = self._client.request(
+                method=method,
+                url=url,
+                json=json_body,
+                params=params,
+                headers=self._auth_headers(),
+            )
         except httpx.HTTPError as exc:
             raise CloudClientError(f"Cloud API request failed: {exc}") from exc
 
@@ -120,3 +120,6 @@ class CloudAutomationClient:
     def get_apply_run(self, run_id: str) -> CloudApplyRunStatus:
         body = self._request(method="GET", path=f"/v1/apply-runs/{run_id}")
         return CloudApplyRunStatus.model_validate(body)
+
+    def close(self) -> None:
+        self._client.close()

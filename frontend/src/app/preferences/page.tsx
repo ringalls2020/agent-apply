@@ -1,6 +1,6 @@
 "use client";
 
-import { ApolloProvider, useMutation, useQuery } from "@apollo/client";
+import { useMutation, useQuery } from "@apollo/client";
 import { useEffect, useMemo, useState } from "react";
 
 import { AppShell } from "@/components/layout/AppShell";
@@ -11,7 +11,6 @@ import { FormField } from "@/components/ui/FormField";
 import { InlineAlert } from "@/components/ui/InlineAlert";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { ME, UPDATE_PREFERENCES } from "@/graphql/operations";
-import { getClient } from "@/lib/apollo";
 import { useRequireAuth } from "@/lib/useRequireAuth";
 
 type UserProfile = {
@@ -149,9 +148,5 @@ function PreferencesInner() {
 }
 
 export default function PreferencesPage() {
-  return (
-    <ApolloProvider client={getClient()}>
-      <PreferencesInner />
-    </ApolloProvider>
-  );
+  return <PreferencesInner />;
 }

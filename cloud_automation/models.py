@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from common.time import utc_now
+
 
 class MatchRunStatus(str, Enum):
     queued = "queued"
@@ -131,7 +133,7 @@ class ApplyAttemptCallbackPayload(BaseModel):
     run_id: str
     user_ref: str
     attempt: ApplyAttemptRecord
-    emitted_at: datetime = Field(default_factory=datetime.utcnow)
+    emitted_at: datetime = Field(default_factory=utc_now)
 
 
 class JobSearchResponse(BaseModel):

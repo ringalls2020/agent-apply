@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -31,6 +31,11 @@ class RawJobDocumentRow(Base):
 
 class NormalizedJobRow(Base):
     __tablename__ = "normalized_jobs"
+    __table_args__ = (
+        Index("ix_normalized_jobs_created_at", "created_at"),
+        Index("ix_normalized_jobs_location", "location"),
+        Index("ix_normalized_jobs_source", "source"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)

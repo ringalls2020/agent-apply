@@ -20,6 +20,8 @@ class ApplicationRecordRow(Base):
     __tablename__ = "applications"
     __table_args__ = (
         Index("ix_applications_user_discovered_at", "user_id", "opportunity_discovered_at"),
+        Index("ix_applications_user_status", "user_id", "status"),
+        Index("ix_applications_user_company", "user_id", "opportunity_company"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)

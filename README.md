@@ -49,6 +49,9 @@ uvicorn cloud_automation.main:app --reload --port 8100
 
 Cloud service docs: [cloud_automation/README.md](cloud_automation/README.md)
 
+Match/apply runs are enqueue-only at the API layer and are processed by workers
+(`match_worker`, `apply_worker`) for single-consumer execution.
+
 ## Run frontend
 
 ```bash

@@ -1,13 +1,19 @@
 "use client";
 
-import { ApolloClient, HttpLink, InMemoryCache } from "@apollo/client";
+import { ApolloClient, HttpLink, InMemoryCache, type NormalizedCacheObject } from "@apollo/client";
+
+import { getAuthToken } from "@/lib/authToken";
+
+let apolloClient: ApolloClient<NormalizedCacheObject> | null = null;
 
 export function getClient() {
-  return new ApolloClient({
+  if (apolloClient) return apolloClient;
+
+  apolloClient = new ApolloClient({
     link: new HttpLink({
       uri: "/api/graphql",
       fetch: (uri, options) => {
-        const token = typeof window !== "undefined" ? localStorage.getItem("agent_apply_token")?.trim() : null;
+        const token = getAuthToken();
         const headers = new Headers(options?.headers);
         if (token) headers.set("authorization", `Bearer ${token}`);
         return fetch(uri, { ...options, headers, credentials: "same-origin" });
@@ -15,4 +21,6 @@ export function getClient() {
     }),
     cache: new InMemoryCache(),
   });
+
+  return apolloClient;
 }

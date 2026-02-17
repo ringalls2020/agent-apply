@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, status
 
@@ -47,7 +48,22 @@ def create_app(database_url: str | None = None) -> FastAPI:
     session_factory = create_session_factory(engine)
     configured_adapters = build_configured_adapters()
 
-    app = FastAPI(title="Job Intel API", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        Base.metadata.create_all(bind=app.state.engine)
+        if app.state.enable_embedded_discovery_loop:
+            app.state.discovery_task = asyncio.create_task(discovery_loop())
+        try:
+            yield
+        finally:
+            task = getattr(app.state, "discovery_task", None)
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            app.state.engine.dispose()
+
+    app = FastAPI(title="Job Intel API", version="0.1.0", lifespan=lifespan)
     app.state.engine = engine
     app.state.store = JobIntelStore(session_factory)
     app.state.discovery = DiscoveryCoordinator(
@@ -70,7 +86,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
     except ValueError:
         app.state.discovery_interval_seconds = 21600
     app.state.enable_embedded_discovery_loop = (
-        os.getenv("ENABLE_EMBEDDED_DISCOVERY_LOOP", "true").strip().lower()
+        os.getenv("ENABLE_EMBEDDED_DISCOVERY_LOOP", "false").strip().lower()
         in {"1", "true", "yes", "on"}
     )
     if not configured_adapters:
@@ -114,21 +130,6 @@ def create_app(database_url: str | None = None) -> FastAPI:
                 detail=f"Invalid service token: {exc}",
             ) from exc
 
-    @app.on_event("startup")
-    async def startup() -> None:
-        Base.metadata.create_all(bind=app.state.engine)
-        if app.state.enable_embedded_discovery_loop:
-            app.state.discovery_task = asyncio.create_task(discovery_loop())
-
-    @app.on_event("shutdown")
-    async def shutdown() -> None:
-        task = getattr(app.state, "discovery_task", None)
-        if task is not None:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        app.state.engine.dispose()
-
     @app.get("/health")
     async def health() -> dict:
         return {"status": "ok"}
@@ -159,7 +160,6 @@ def create_app(database_url: str | None = None) -> FastAPI:
     async def create_match_run(request: Request, payload: MatchRunRequest) -> MatchRunCreated:
         authorize(request)
         run_id = app.state.store.create_match_run(payload)
-        asyncio.create_task(app.state.matching.execute(run_id))
         return MatchRunCreated(
             run_id=run_id,
             status="queued",
@@ -178,7 +178,6 @@ def create_app(database_url: str | None = None) -> FastAPI:
     async def create_apply_run(request: Request, payload: ApplyRunRequest) -> ApplyRunCreated:
         authorize(request)
         run_id = app.state.store.create_apply_run(payload)
-        asyncio.create_task(app.state.apply.execute(run_id))
         return ApplyRunCreated(
             run_id=run_id,
             status="queued",

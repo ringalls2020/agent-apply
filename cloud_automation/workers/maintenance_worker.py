@@ -3,9 +3,10 @@ from __future__ import annotations
 import logging
 import os
 import time
-from datetime import datetime
 
 from sqlalchemy import delete
+
+from common.time import utc_now
 
 from cloud_automation.db import create_db_engine, create_session_factory, get_database_url
 from cloud_automation.db_models import ArtifactRefRow
@@ -21,7 +22,7 @@ def run() -> None:
 
     logger.info("maintenance_worker_started", extra={"interval_seconds": interval})
     while True:
-        cutoff = datetime.utcnow()
+        cutoff = utc_now()
         with session_factory() as session:
             session.execute(
                 delete(ArtifactRefRow).where(ArtifactRefRow.expires_at.is_not(None), ArtifactRefRow.expires_at < cutoff)
