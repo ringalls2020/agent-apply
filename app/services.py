@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List
+from typing import List
 from uuid import uuid4
 
 from .models import (
@@ -11,88 +12,105 @@ from .models import (
     Contact,
     Opportunity,
 )
+from .store import InMemoryStore
 
 
-class InMemoryStore:
-    def __init__(self) -> None:
-        self.applications: Dict[str, ApplicationRecord] = {}
-
-    def upsert(self, record: ApplicationRecord) -> ApplicationRecord:
-        self.applications[record.id] = record
-        return record
-
-    def list_all(self) -> List[ApplicationRecord]:
-        return sorted(
-            self.applications.values(),
-            key=lambda item: item.opportunity.discovered_at,
-            reverse=True,
-        )
-
-
-class OpportunityAgent:
-    """Simple deterministic mock agent for discovery + apply pipeline.
-
-    Replace the mock methods with real providers for:
-      - internet search (SerpAPI, Tavily, Bing, etc.)
-      - automated applications (Playwright/RPA with guardrails)
-      - contact enrichment (Apollo/Clearbit/LinkedIn API)
-      - notifications (email/slack/sms)
-    """
-
-    def __init__(self, store: InMemoryStore) -> None:
-        self.store = store
-
-    def run(self, request: AgentRunRequest) -> List[ApplicationRecord]:
-        opportunities = self._discover(request)
-        records: List[ApplicationRecord] = []
-
-        for opp in opportunities:
-            applied_record = self._apply(opp)
-            enriched_record = self._find_point_of_contact(applied_record)
-            notified_record = self._notify(enriched_record)
-            records.append(self.store.upsert(notified_record))
-
-        return records
-
-    def _discover(self, request: AgentRunRequest) -> List[Opportunity]:
+@dataclass
+class DiscoveryService:
+    def find_opportunities(self, request: AgentRunRequest) -> List[Opportunity]:
         interests = ", ".join(request.profile.interests)
-        opportunities = []
+        opportunities: List[Opportunity] = []
 
         for idx in range(request.max_opportunities):
+            topic = request.profile.interests[idx % len(request.profile.interests)].title()
+            location = request.profile.locations[idx % len(request.profile.locations)]
             opportunities.append(
                 Opportunity(
                     id=str(uuid4()),
-                    title=f"{request.profile.interests[idx % len(request.profile.interests)].title()} Fellow",
+                    title=f"{topic} Fellow",
                     company=f"Novel Labs {idx + 1}",
+                    location=location,
+                    employment_type="full-time",
                     url=f"https://example.com/jobs/{idx + 1}",
                     reason=(
-                        f"Matched resume with interests ({interests}) and found a novel role "
-                        "with high skills overlap."
+                        f"Matched resume against interests ({interests}) and selected a role "
+                        "with strong overlap in skills and stated focus areas."
                     ),
                 )
             )
 
         return opportunities
 
-    def _apply(self, opportunity: Opportunity) -> ApplicationRecord:
+
+@dataclass
+class ApplyService:
+    def submit(self, opportunity: Opportunity) -> ApplicationRecord:
         return ApplicationRecord(
             id=str(uuid4()),
             opportunity=opportunity,
             status=ApplicationStatus.applied,
             submitted_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
         )
 
-    def _find_point_of_contact(self, record: ApplicationRecord) -> ApplicationRecord:
-        contact = Contact(
+
+@dataclass
+class ContactService:
+    def enrich(self, record: ApplicationRecord) -> ApplicationRecord:
+        record.contact = Contact(
             name=f"Recruiter for {record.opportunity.company}",
             email=f"recruiting@{record.opportunity.company.lower().replace(' ', '')}.com",
             role="Talent Acquisition",
             source="Company careers page",
         )
-        record.contact = contact
+        record.status = ApplicationStatus.contacted
+        record.updated_at = datetime.utcnow()
         return record
 
-    def _notify(self, record: ApplicationRecord) -> ApplicationRecord:
+
+@dataclass
+class NotificationService:
+    def notify(self, record: ApplicationRecord) -> ApplicationRecord:
         record.status = ApplicationStatus.notified
         record.notified_at = datetime.utcnow()
+        record.updated_at = datetime.utcnow()
         return record
+
+
+class OpportunityAgent:
+    """Coordinator for discover -> apply -> contact -> notify."""
+
+    def __init__(
+        self,
+        store: InMemoryStore,
+        discovery: DiscoveryService | None = None,
+        applier: ApplyService | None = None,
+        contacts: ContactService | None = None,
+        notifier: NotificationService | None = None,
+    ) -> None:
+        self.store = store
+        self.discovery = discovery or DiscoveryService()
+        self.applier = applier or ApplyService()
+        self.contacts = contacts or ContactService()
+        self.notifier = notifier or NotificationService()
+
+    def run(self, request: AgentRunRequest) -> List[ApplicationRecord]:
+        opportunities = self.discovery.find_opportunities(request)
+        records: List[ApplicationRecord] = []
+
+        for opp in opportunities:
+            if request.auto_apply:
+                record = self.applier.submit(opp)
+                record = self.contacts.enrich(record)
+                record = self.notifier.notify(record)
+            else:
+                record = ApplicationRecord(
+                    id=str(uuid4()),
+                    opportunity=opp,
+                    status=ApplicationStatus.discovered,
+                    updated_at=datetime.utcnow(),
+                )
+
+            records.append(self.store.upsert(record))
+
+        return records
