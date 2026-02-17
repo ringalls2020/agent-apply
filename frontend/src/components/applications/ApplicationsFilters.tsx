@@ -1,6 +1,9 @@
+import { useState } from "react";
+
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { FormField } from "@/components/ui/FormField";
+import { cn } from "@/lib/cn";
 
 import { type FilterState, sourceOptions, statusOptions } from "@/components/applications/types";
 
@@ -34,6 +37,8 @@ export function ApplicationsFilters({
   onToggleStatus,
   onToggleSource,
 }: ApplicationsFiltersProps) {
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+
   return (
     <Card className="mb-4 space-y-4" variant="elevated">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -43,12 +48,27 @@ export function ApplicationsFilters({
             Narrow the review queue, then bulk auto-apply selected rows.
           </p>
         </div>
-        <Button variant="secondary" size="sm" onClick={onClearFilters}>
-          Clear filters
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="sm:hidden"
+            aria-expanded={mobileFiltersOpen}
+            aria-controls="applications-filter-fields"
+            onClick={() => setMobileFiltersOpen((current) => !current)}
+          >
+            {mobileFiltersOpen ? "Hide filters" : "Show filters"}
+          </Button>
+          <Button variant="secondary" size="sm" onClick={onClearFilters} className={cn(!mobileFiltersOpen && "hidden", "sm:inline-flex")}>
+            Clear filters
+          </Button>
+        </div>
       </div>
 
-      <div className="grid gap-3 sm:gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div
+        id="applications-filter-fields"
+        className={cn("gap-3 sm:gap-4 sm:grid-cols-2 lg:grid-cols-4 sm:grid", mobileFiltersOpen ? "grid" : "hidden")}
+      >
         <FormField
           id="applications-search"
           label="Keyword"
