@@ -23,13 +23,13 @@ const variantClasses: Record<ButtonVariant, string> = {
 };
 
 const sizeClasses: Record<ButtonSize, string> = {
-  sm: "h-9 px-3 text-sm",
+  sm: "h-10 px-3 text-sm sm:h-9",
   md: "h-11 px-4 text-sm",
   lg: "h-12 px-5 text-base",
 };
 
 const sharedButtonClasses =
-  "inline-flex items-center justify-center gap-2 rounded-xl2 border border-transparent font-semibold transition duration-250 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-80";
+  "inline-flex min-w-0 items-center justify-center gap-2 rounded-xl2 border border-transparent font-semibold transition duration-250 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-80";
 
 export function buttonVariants({
   variant = "primary",

@@ -26,7 +26,7 @@ function SignupInner() {
       subtitle="Set up your profile and start automating qualified job applications."
     >
       <form
-        className="space-y-4"
+        className="space-y-3.5 sm:space-y-4"
         onSubmit={async (event) => {
           event.preventDefault();
           setError("");
@@ -80,7 +80,7 @@ function SignupInner() {
           Sign up
         </Button>
 
-        <p className="text-center text-sm text-muted">
+        <p className="text-center text-sm text-muted text-wrap-anywhere">
           Already registered?{" "}
           <Link href="/login" className="font-semibold text-accentSoft hover:text-accent">
             Login

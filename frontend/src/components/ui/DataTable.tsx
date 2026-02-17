@@ -16,9 +16,17 @@ type DataTableProps<T> = {
   rowKey: (row: T) => string;
   className?: string;
   emptyState?: ReactNode;
+  renderMobileRow?: (row: T) => ReactNode;
 };
 
-export function DataTable<T>({ data, columns, rowKey, className, emptyState }: DataTableProps<T>) {
+export function DataTable<T>({
+  data,
+  columns,
+  rowKey,
+  className,
+  emptyState,
+  renderMobileRow,
+}: DataTableProps<T>) {
   if (!data.length) {
     return <>{emptyState ?? null}</>;
   }
@@ -55,18 +63,22 @@ export function DataTable<T>({ data, columns, rowKey, className, emptyState }: D
       </div>
 
       <div className="space-y-3 p-3 md:hidden">
-        {data.map((row) => (
-          <article key={rowKey(row)} className="rounded-xl2 border border-border/80 bg-surfaceAlt/55 p-3">
-            {columns.map((column) => (
-              <div key={column.id} className="grid grid-cols-[110px_1fr] gap-3 py-1.5">
-                <p className="text-xs font-semibold uppercase tracking-wide text-muted">
-                  {column.mobileLabel ?? column.header}
-                </p>
-                <div className="text-sm text-foreground">{column.render(row)}</div>
-              </div>
-            ))}
-          </article>
-        ))}
+        {data.map((row) =>
+          renderMobileRow ? (
+            <div key={rowKey(row)}>{renderMobileRow(row)}</div>
+          ) : (
+            <article key={rowKey(row)} className="rounded-xl2 border border-border/80 bg-surfaceAlt/55 p-3">
+              {columns.map((column) => (
+                <div key={column.id} className="grid grid-cols-[96px_minmax(0,1fr)] gap-2.5 py-1.5">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted">
+                    {column.mobileLabel ?? column.header}
+                  </p>
+                  <div className="text-sm text-foreground text-wrap-anywhere">{column.render(row)}</div>
+                </div>
+              ))}
+            </article>
+          ),
+        )}
       </div>
     </div>
   );

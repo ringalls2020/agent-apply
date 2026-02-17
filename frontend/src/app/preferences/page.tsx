@@ -66,16 +66,16 @@ function PreferencesInner() {
     <AppShell className="pb-8">
       <Nav />
 
-      <Card variant="elevated" className="mx-auto w-full max-w-3xl space-y-5">
+      <Card variant="elevated" className="mx-auto w-full max-w-3xl space-y-4 sm:space-y-5">
         <div>
           <h2 className="text-2xl font-semibold text-foreground">User preferences</h2>
-          <p className="mt-1 text-sm text-muted">
+          <p className="mt-1 text-sm text-muted text-wrap-anywhere">
             Tune which opportunities are targeted and how aggressively the automation applies each day.
           </p>
         </div>
 
         <form
-          className="space-y-4"
+          className="space-y-3.5 sm:space-y-4"
           onSubmit={async (event) => {
             event.preventDefault();
             setNotice(null);
@@ -127,7 +127,7 @@ function PreferencesInner() {
                 {parsedInterests.map((interest) => (
                   <span
                     key={interest}
-                    className="inline-flex rounded-full border border-accent/35 bg-accent/10 px-2.5 py-1 text-xs font-semibold text-accentSoft"
+                    className="inline-flex rounded-full border border-accent/35 bg-accent/10 px-2.5 py-1 text-xs font-semibold text-accentSoft text-wrap-anywhere"
                   >
                     {interest}
                   </span>
@@ -138,7 +138,7 @@ function PreferencesInner() {
 
           {notice && <InlineAlert variant={notice.variant}>{notice.message}</InlineAlert>}
 
-          <Button type="submit" loading={loading} loadingText="Saving...">
+          <Button type="submit" loading={loading} loadingText="Saving..." className="w-full sm:w-auto">
             Save preferences
           </Button>
         </form>

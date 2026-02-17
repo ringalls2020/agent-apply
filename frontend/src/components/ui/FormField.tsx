@@ -13,7 +13,7 @@ export function FormField({ id, label, hint, error, className, ...props }: FormF
 
   return (
     <div className="space-y-2">
-      <label htmlFor={id} className="block text-sm font-medium text-foreground">
+      <label htmlFor={id} className="block text-sm font-medium text-foreground text-wrap-anywhere">
         {label}
       </label>
       <Input
@@ -24,7 +24,7 @@ export function FormField({ id, label, hint, error, className, ...props }: FormF
         {...props}
       />
       {(hint || error) && (
-        <p id={messageId} className={cn("text-xs", error ? "text-danger" : "text-muted")}>
+        <p id={messageId} className={cn("text-xs text-wrap-anywhere", error ? "text-danger" : "text-muted")}>
           {error ?? hint}
         </p>
       )}

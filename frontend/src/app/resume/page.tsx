@@ -44,15 +44,15 @@ function ResumeInner() {
     <AppShell className="pb-8">
       <Nav />
 
-      <Card variant="elevated" className="mx-auto w-full max-w-3xl space-y-5">
+      <Card variant="elevated" className="mx-auto w-full max-w-3xl space-y-4 sm:space-y-5">
         <div>
           <h2 className="text-2xl font-semibold text-foreground">Resume upload</h2>
-          <p className="mt-1 text-sm text-muted">
+          <p className="mt-1 text-sm text-muted text-wrap-anywhere">
             Upload your latest resume so matching and application quality stay aligned with your profile.
           </p>
         </div>
 
-        <label className="relative flex cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed border-accent/45 bg-accent/5 p-7 text-center transition duration-250 hover:bg-accent/10 focus-within:ring-2 focus-within:ring-accent/40">
+        <label className="relative flex cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed border-accent/45 bg-accent/5 p-5 text-center transition duration-250 hover:bg-accent/10 focus-within:ring-2 focus-within:ring-accent/40 sm:p-7">
           <input
             type="file"
             accept=".txt,.md"
@@ -77,14 +77,14 @@ function ResumeInner() {
             }}
           />
 
-          <p className="text-sm font-semibold text-accentSoft">Drop a resume file or click to browse</p>
-          <p className="mt-1 text-xs text-muted">Accepted formats: .txt, .md</p>
+          <p className="text-sm font-semibold text-accentSoft text-wrap-anywhere">Drop a resume file or click to browse</p>
+          <p className="mt-1 text-xs text-muted text-wrap-anywhere">Accepted formats: .txt, .md</p>
         </label>
 
-        <div className="rounded-xl2 border border-border/80 bg-surfaceAlt/55 p-4">
+        <div className="rounded-xl2 border border-border/80 bg-surfaceAlt/55 p-3.5 sm:p-4">
           <p className="text-xs font-semibold uppercase tracking-wide text-muted">Current resume</p>
-          <p className="mt-1 text-sm text-foreground">{data?.me?.resumeFilename || "No resume uploaded"}</p>
-          {selectedFileName && <p className="mt-2 text-xs text-muted">Last selected file: {selectedFileName}</p>}
+          <p className="mt-1 text-sm text-foreground text-wrap-anywhere">{data?.me?.resumeFilename || "No resume uploaded"}</p>
+          {selectedFileName && <p className="mt-2 text-xs text-muted text-wrap-anywhere">Last selected file: {selectedFileName}</p>}
         </div>
 
         {notice && <InlineAlert variant={notice.variant}>{notice.message}</InlineAlert>}

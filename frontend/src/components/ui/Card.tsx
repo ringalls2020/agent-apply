@@ -15,7 +15,7 @@ type CardProps = HTMLAttributes<HTMLDivElement> & {
 };
 
 export function Card({ className, variant = "base", ...props }: CardProps) {
-  return <div className={cn("rounded-2xl p-5", variantClasses[variant], className)} {...props} />;
+  return <div className={cn("rounded-2xl p-4 sm:p-5", variantClasses[variant], className)} {...props} />;
 }
 
 export function CardTitle({ className, ...props }: HTMLAttributes<HTMLHeadingElement>) {

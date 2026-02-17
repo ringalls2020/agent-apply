@@ -25,7 +25,7 @@ function LoginInner() {
       subtitle="Resume your autonomous application pipeline and monitor progress."
     >
       <form
-        className="space-y-4"
+        className="space-y-3.5 sm:space-y-4"
         onSubmit={async (event) => {
           event.preventDefault();
           setError("");
@@ -70,7 +70,7 @@ function LoginInner() {
           Login
         </Button>
 
-        <p className="text-center text-sm text-muted">
+        <p className="text-center text-sm text-muted text-wrap-anywhere">
           No account yet?{" "}
           <Link href="/signup" className="font-semibold text-accentSoft hover:text-accent">
             Create one

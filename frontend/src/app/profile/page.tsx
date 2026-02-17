@@ -201,10 +201,10 @@ function ProfileInner() {
     <AppShell className="pb-8">
       <Nav />
 
-      <Card variant="elevated" className="mx-auto w-full max-w-4xl space-y-6">
+      <Card variant="elevated" className="mx-auto w-full max-w-4xl space-y-5 sm:space-y-6">
         <div>
           <h2 className="text-2xl font-semibold text-foreground">Application profile</h2>
-          <p className="mt-1 text-sm text-muted">
+          <p className="mt-1 text-sm text-muted text-wrap-anywhere">
             Configure autosubmit behavior and provide answers used by autonomous application workflows.
           </p>
         </div>
@@ -213,7 +213,7 @@ function ProfileInner() {
           <LoadingState label="Loading profile..." className="min-h-[120px]" />
         ) : (
           <form
-            className="space-y-6"
+            className="space-y-5 sm:space-y-6"
             onSubmit={async (event) => {
               event.preventDefault();
               setNotice(null);
@@ -257,7 +257,7 @@ function ProfileInner() {
               }
             }}
           >
-            <section className="rounded-xl2 border border-border/80 bg-surfaceAlt/55 p-4">
+            <section className="rounded-xl2 border border-border/80 bg-surfaceAlt/55 p-3.5 sm:p-4">
               <label className="flex items-start gap-3">
                 <input
                   type="checkbox"
@@ -272,14 +272,14 @@ function ProfileInner() {
                 />
                 <div>
                   <p className="text-sm font-semibold text-foreground">Enable autosubmit</p>
-                  <p className="text-xs text-muted">
+                  <p className="text-xs text-muted text-wrap-anywhere">
                     When enabled, `/v1/agent/run` will trigger autonomous apply attempts immediately after matching.
                   </p>
                 </div>
               </label>
             </section>
 
-            <section className="grid gap-4 sm:grid-cols-2">
+            <section className="grid gap-3 sm:gap-4 sm:grid-cols-2">
               <FormField
                 id="profile-phone"
                 label="Phone"
@@ -322,7 +322,7 @@ function ProfileInner() {
               />
             </section>
 
-            <section className="grid gap-4 sm:grid-cols-3">
+            <section className="grid gap-3 sm:gap-4 sm:grid-cols-3">
               <FormField
                 id="profile-linkedin"
                 label="LinkedIn URL"
@@ -343,9 +343,9 @@ function ProfileInner() {
               />
             </section>
 
-            <section className="grid gap-4 sm:grid-cols-2">
+            <section className="grid gap-3 sm:gap-4 sm:grid-cols-2">
               <label className="space-y-2 text-sm">
-                <span className="block font-medium text-foreground">Requires sponsorship</span>
+                <span className="block font-medium text-foreground text-wrap-anywhere">Requires sponsorship</span>
                 <select
                   value={form.requiresSponsorship ? "yes" : "no"}
                   onChange={(e) =>
@@ -358,7 +358,7 @@ function ProfileInner() {
                 </select>
               </label>
               <label className="space-y-2 text-sm">
-                <span className="block font-medium text-foreground">Willing to relocate</span>
+                <span className="block font-medium text-foreground text-wrap-anywhere">Willing to relocate</span>
                 <select
                   value={form.willingToRelocate ? "yes" : "no"}
                   onChange={(e) =>
@@ -372,7 +372,7 @@ function ProfileInner() {
               </label>
             </section>
 
-            <section className="grid gap-4 sm:grid-cols-2">
+            <section className="grid gap-3 sm:gap-4 sm:grid-cols-2">
               <FormField
                 id="profile-writing-voice"
                 label="Writing Voice"
@@ -389,9 +389,9 @@ function ProfileInner() {
               />
             </section>
 
-            <section className="grid gap-4">
+            <section className="grid gap-3 sm:gap-4">
               <label className="space-y-2 text-sm">
-                <span className="block font-medium text-foreground">Achievements Summary</span>
+                <span className="block font-medium text-foreground text-wrap-anywhere">Achievements Summary</span>
                 <textarea
                   value={form.achievementsSummary}
                   onChange={(e) => setForm((current) => ({ ...current, achievementsSummary: e.target.value }))}
@@ -400,7 +400,7 @@ function ProfileInner() {
                 />
               </label>
               <label className="space-y-2 text-sm">
-                <span className="block font-medium text-foreground">Additional Context</span>
+                <span className="block font-medium text-foreground text-wrap-anywhere">Additional Context</span>
                 <textarea
                   value={form.additionalContext}
                   onChange={(e) => setForm((current) => ({ ...current, additionalContext: e.target.value }))}
@@ -409,7 +409,7 @@ function ProfileInner() {
                 />
               </label>
               <label className="space-y-2 text-sm">
-                <span className="block font-medium text-foreground">Custom Answers</span>
+                <span className="block font-medium text-foreground text-wrap-anywhere">Custom Answers</span>
                 <textarea
                   value={form.customAnswersText}
                   onChange={(e) => setForm((current) => ({ ...current, customAnswersText: e.target.value }))}
@@ -417,13 +417,15 @@ function ProfileInner() {
                   placeholder="question_key=answer"
                   className="block w-full rounded-xl2 border border-border bg-surfaceAlt/70 px-3.5 py-2.5 text-sm text-foreground"
                 />
-                <p className="text-xs text-muted">One `question_key=answer` per line. Used as overrides before LLM generation.</p>
+                <p className="text-xs text-muted text-wrap-anywhere">
+                  One `question_key=answer` per line. Used as overrides before LLM generation.
+                </p>
               </label>
             </section>
 
-            <section className="grid gap-4 sm:grid-cols-2">
+            <section className="grid gap-3 sm:gap-4 sm:grid-cols-2">
               <label className="space-y-2 text-sm">
-                <span className="block font-medium text-foreground">Gender</span>
+                <span className="block font-medium text-foreground text-wrap-anywhere">Gender</span>
                 <select
                   value={form.gender}
                   onChange={(e) => setForm((current) => ({ ...current, gender: e.target.value }))}
@@ -437,7 +439,7 @@ function ProfileInner() {
                 </select>
               </label>
               <label className="space-y-2 text-sm">
-                <span className="block font-medium text-foreground">Race / Ethnicity</span>
+                <span className="block font-medium text-foreground text-wrap-anywhere">Race / Ethnicity</span>
                 <select
                   value={form.raceEthnicity}
                   onChange={(e) => setForm((current) => ({ ...current, raceEthnicity: e.target.value }))}
@@ -451,7 +453,7 @@ function ProfileInner() {
                 </select>
               </label>
               <label className="space-y-2 text-sm">
-                <span className="block font-medium text-foreground">Veteran Status</span>
+                <span className="block font-medium text-foreground text-wrap-anywhere">Veteran Status</span>
                 <select
                   value={form.veteranStatus}
                   onChange={(e) => setForm((current) => ({ ...current, veteranStatus: e.target.value }))}
@@ -465,7 +467,7 @@ function ProfileInner() {
                 </select>
               </label>
               <label className="space-y-2 text-sm">
-                <span className="block font-medium text-foreground">Disability Status</span>
+                <span className="block font-medium text-foreground text-wrap-anywhere">Disability Status</span>
                 <select
                   value={form.disabilityStatus}
                   onChange={(e) => setForm((current) => ({ ...current, disabilityStatus: e.target.value }))}
@@ -482,7 +484,7 @@ function ProfileInner() {
 
             {notice && <InlineAlert variant={notice.variant}>{notice.message}</InlineAlert>}
 
-            <Button type="submit" loading={saving} loadingText="Saving profile...">
+            <Button type="submit" loading={saving} loadingText="Saving profile..." className="w-full sm:w-auto">
               Save profile
             </Button>
           </form>
