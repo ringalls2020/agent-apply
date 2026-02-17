@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent Apply Admin</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 2rem; background: #f7f7fb; color: #222; }
+      .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+      .card { background: #fff; border-radius: 10px; padding: 1rem; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+      table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 10px; overflow: hidden; }
+      th, td { padding: 0.75rem; text-align: left; border-bottom: 1px solid #ececf2; }
+      th { background: #fafafc; }
+      .status { font-weight: bold; text-transform: uppercase; font-size: 0.8rem; }
+    </style>
+  </head>
+  <body>
+    <h1>Agent Apply Admin Dashboard</h1>
+
+    <div class="grid">
+      <div class="card"><h3>Total Opportunities</h3><p>{{ stats.total }}</p></div>
+      <div class="card"><h3>Applied</h3><p>{{ stats.applied }}</p></div>
+      <div class="card"><h3>Notified</h3><p>{{ stats.notified }}</p></div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Company</th>
+          <th>Role</th>
+          <th>Status</th>
+          <th>Point of Contact</th>
+          <th>Job URL</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for app in applications %}
+        <tr>
+          <td>{{ app.opportunity.company }}</td>
+          <td>{{ app.opportunity.title }}</td>
+          <td class="status">{{ app.status }}</td>
+          <td>
+            {% if app.contact %}
+              {{ app.contact.name }}<br />
+              <small>{{ app.contact.email }}</small>
+            {% else %}
+              <small>Not found</small>
+            {% endif %}
+          </td>
+          <td><a href="{{ app.opportunity.url }}" target="_blank">Open</a></td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="5">No applications yet. Trigger POST /agent/run first.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </body>
+</html>
