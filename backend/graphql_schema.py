@@ -30,6 +30,22 @@ from .models import (
 from common.time import utc_now
 
 
+def _derive_application_source(job_url: str) -> str:
+    try:
+        host = job_url.split("//", 1)[-1].split("/", 1)[0].lower()
+    except Exception:
+        return "other"
+    if "greenhouse" in host:
+        return "greenhouse"
+    if "lever.co" in host:
+        return "lever"
+    if "smartrecruiters" in host:
+        return "smartrecruiters"
+    if "myworkdayjobs.com" in host or "workday" in host:
+        return "workday"
+    return "other"
+
+
 class ContactType(graphene.ObjectType):
     name = graphene.String(required=True)
     email = graphene.String(required=True)
@@ -54,6 +70,32 @@ class ApplicationRecordType(graphene.ObjectType):
     contact = graphene.Field(ContactType)
     submitted_at = graphene.DateTime()
     notified_at = graphene.DateTime()
+    title = graphene.String(required=True)
+    company = graphene.String(required=True)
+    source = graphene.String(required=True)
+    contact_name = graphene.String(required=True)
+    contact_email = graphene.String(required=True)
+    job_url = graphene.String(required=True)
+
+    def resolve_title(parent, _info):
+        return parent["opportunity"]["title"]
+
+    def resolve_company(parent, _info):
+        return parent["opportunity"]["company"]
+
+    def resolve_source(parent, _info):
+        return _derive_application_source(parent["opportunity"]["url"])
+
+    def resolve_contact_name(parent, _info):
+        contact = parent.get("contact")
+        return contact.get("name", "") if contact else ""
+
+    def resolve_contact_email(parent, _info):
+        contact = parent.get("contact")
+        return contact.get("email", "") if contact else ""
+
+    def resolve_job_url(parent, _info):
+        return parent["opportunity"]["url"]
 
 
 class AuthUserProfileType(graphene.ObjectType):

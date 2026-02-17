@@ -47,7 +47,7 @@ type ApplicationsSearchQuery = {
 };
 
 type UserProfile = {
-  name: string;
+  fullName: string;
   interests: string[];
   applicationsPerDay: number;
   autosubmitEnabled: boolean;
