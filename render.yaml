@@ -1,0 +1,131 @@
+databases:
+  - name: main-postgres
+    databaseName: agent_apply_main
+    user: agent_apply_main
+    plan: starter
+
+  - name: jobs-postgres
+    databaseName: agent_apply_jobs
+    user: agent_apply_jobs
+    plan: starter
+
+services:
+  - type: web
+    name: main-api
+    env: python
+    plan: starter
+    region: oregon
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: main-postgres
+          property: connectionString
+      - key: CLOUD_AUTOMATION_BASE_URL
+        value: https://job-intel-api.onrender.com
+      - key: CLOUD_AUTOMATION_SERVICE_ID
+        value: main-api
+      - key: CLOUD_AUTOMATION_AUDIENCE
+        value: job-intel-api
+      - key: CLOUD_AUTOMATION_SIGNING_SECRET
+        sync: false
+      - key: CLOUD_CALLBACK_SIGNING_SECRET
+        sync: false
+      - key: CLOUD_CALLBACK_SIGNATURE_SECRET
+        sync: false
+      - key: CLOUD_CALLBACK_AUDIENCE
+        value: main-api
+      - key: CLOUD_CALLBACK_ISSUER
+        value: job-intel-api
+      - key: DEFAULT_APPLY_DAILY_CAP
+        value: "25"
+
+  - type: web
+    name: job-intel-api
+    env: python
+    plan: starter
+    region: oregon
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn cloud_automation.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: JOBS_DATABASE_URL
+        fromDatabase:
+          name: jobs-postgres
+          property: connectionString
+      - key: CLOUD_AUTOMATION_SIGNING_SECRET
+        sync: false
+      - key: CLOUD_AUTOMATION_EXPECTED_AUDIENCE
+        value: job-intel-api
+      - key: CLOUD_AUTOMATION_EXPECTED_ISSUER
+        value: main-api
+      - key: DISCOVERY_INTERVAL_SECONDS
+        value: "21600"
+      - key: ENABLE_EMBEDDED_DISCOVERY_LOOP
+        value: "false"
+      - key: MAIN_CALLBACK_URL
+        value: https://main-api.onrender.com/internal/cloud/callbacks/apply-result
+      - key: CLOUD_CALLBACK_ISSUER
+        value: job-intel-api
+      - key: CLOUD_CALLBACK_AUDIENCE
+        value: main-api
+      - key: CLOUD_CALLBACK_SIGNING_SECRET
+        sync: false
+      - key: CLOUD_CALLBACK_SIGNATURE_SECRET
+        sync: false
+
+  - type: worker
+    name: discovery-worker
+    env: python
+    plan: starter
+    region: oregon
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m cloud_automation.workers.discovery_worker
+    envVars:
+      - key: JOBS_DATABASE_URL
+        fromDatabase:
+          name: jobs-postgres
+          property: connectionString
+      - key: DISCOVERY_INTERVAL_SECONDS
+        value: "21600"
+
+  - type: worker
+    name: apply-worker
+    env: python
+    plan: starter
+    region: oregon
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m cloud_automation.workers.apply_worker
+    envVars:
+      - key: JOBS_DATABASE_URL
+        fromDatabase:
+          name: jobs-postgres
+          property: connectionString
+      - key: MAIN_CALLBACK_URL
+        value: https://main-api.onrender.com/internal/cloud/callbacks/apply-result
+      - key: CLOUD_CALLBACK_ISSUER
+        value: job-intel-api
+      - key: CLOUD_CALLBACK_AUDIENCE
+        value: main-api
+      - key: CLOUD_CALLBACK_SIGNING_SECRET
+        sync: false
+      - key: CLOUD_CALLBACK_SIGNATURE_SECRET
+        sync: false
+
+  - type: worker
+    name: maintenance-worker
+    env: python
+    plan: starter
+    region: oregon
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m cloud_automation.workers.maintenance_worker
+    envVars:
+      - key: JOBS_DATABASE_URL
+        fromDatabase:
+          name: jobs-postgres
+          property: connectionString
