@@ -1,9 +1,26 @@
 # agent-apply
 
-This repository now includes:
+This repository includes:
 
-1. A Python backend prototype (`/app`) from early scaffolding work.
-2. A full **Next.js + GraphQL frontend app** in `/frontend` implementing the requested product UX.
+1. A FastAPI backend prototype in `/backend`.
+2. A Next.js + GraphQL frontend app in `/frontend`.
+
+## Backend quick start
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn backend.main:app --reload
+```
+
+Backend URLs:
+
+- `http://127.0.0.1:8000/docs` (Swagger UI)
+- `http://127.0.0.1:8000/redoc` (ReDoc)
+- `http://127.0.0.1:8000/admin` (HTML dashboard)
+
+Complete backend documentation: `backend/README.md`
 
 ## Frontend capabilities delivered
 

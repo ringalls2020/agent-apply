@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
@@ -5,7 +7,9 @@ from fastapi.templating import Jinja2Templates
 from .models import AgentRunRequest, AgentRunResponse
 from .services import InMemoryStore, OpportunityAgent
 
-templates = Jinja2Templates(directory="app/templates")
+templates = Jinja2Templates(
+    directory=str(Path(__file__).resolve().parent / "templates")
+)
 
 
 def create_app() -> FastAPI:
