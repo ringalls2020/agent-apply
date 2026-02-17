@@ -1,9 +1,14 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ApolloProvider, useMutation } from "@apollo/client";
 
+import { AuthShell } from "@/components/layout/AuthShell";
+import { Button } from "@/components/ui/Button";
+import { FormField } from "@/components/ui/FormField";
+import { InlineAlert } from "@/components/ui/InlineAlert";
 import { getClient } from "@/lib/apollo";
 import { LOGIN } from "@/graphql/operations";
 
@@ -15,20 +20,22 @@ function LoginInner() {
   const [login, { loading }] = useMutation(LOGIN);
 
   return (
-    <div className="card" style={{ maxWidth: 520, margin: "0 auto" }}>
-      <h2>Welcome back</h2>
-      <label>Email</label>
-      <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" />
-      <label>Password</label>
-      <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" />
-      {error && <p style={{ color: "#fca5a5" }}>{error}</p>}
-      <button
-        disabled={loading}
-        onClick={async () => {
+    <AuthShell
+      title="Welcome back"
+      subtitle="Resume your autonomous application pipeline and monitor progress."
+    >
+      <form
+        className="space-y-4"
+        onSubmit={async (event) => {
+          event.preventDefault();
           setError("");
           try {
             const result = await login({ variables: { email, password } });
-            const token = result.data.login.token;
+            const token = result.data?.login?.token;
+            if (!token) {
+              setError("Could not login.");
+              return;
+            }
             localStorage.setItem("agent_apply_token", token);
             document.cookie = `agent_apply_token=${encodeURIComponent(token)}; Path=/; SameSite=Lax`;
             router.push("/applications");
@@ -37,9 +44,41 @@ function LoginInner() {
           }
         }}
       >
-        {loading ? "Logging in..." : "Login"}
-      </button>
-    </div>
+        <FormField
+          id="login-email"
+          label="Email"
+          type="email"
+          autoComplete="email"
+          placeholder="you@example.com"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          required
+        />
+        <FormField
+          id="login-password"
+          label="Password"
+          type="password"
+          autoComplete="current-password"
+          placeholder="Enter your password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          required
+        />
+
+        {error && <InlineAlert variant="error">{error}</InlineAlert>}
+
+        <Button type="submit" fullWidth loading={loading} loadingText="Logging in...">
+          Login
+        </Button>
+
+        <p className="text-center text-sm text-muted">
+          No account yet?{" "}
+          <Link href="/signup" className="font-semibold text-accentSoft hover:text-accent">
+            Create one
+          </Link>
+        </p>
+      </form>
+    </AuthShell>
   );
 }
 
