@@ -97,6 +97,31 @@ class UserResponse(BaseModel):
     updated_at: datetime
 
 
+class AuthSignupRequest(BaseModel):
+    full_name: str = Field(min_length=1, max_length=255)
+    email: str = Field(min_length=3, max_length=255)
+    password: str = Field(min_length=8, max_length=255)
+
+
+class AuthLoginRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+    password: str = Field(min_length=1, max_length=255)
+
+
+class AuthUserProfile(BaseModel):
+    id: str
+    full_name: str
+    email: str
+    interests: List[str] = Field(default_factory=list)
+    applications_per_day: int = 25
+    resume_filename: str | None = None
+
+
+class AuthResponse(BaseModel):
+    token: str
+    user: AuthUserProfile
+
+
 class PreferenceUpsertRequest(BaseModel):
     interests: List[str] = Field(min_length=1)
     locations: List[str] = Field(default_factory=list)

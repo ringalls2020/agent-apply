@@ -34,15 +34,15 @@ def test_postgres_store_returns_records_sorted_by_discovered_date_desc(
     store: PostgresStore,
 ) -> None:
     agent = OpportunityAgent(store=store)
-    records = agent.run(build_request(max_opportunities=2))
+    records = agent.run(user_id="user-1", request=build_request(max_opportunities=2))
 
     records[0].opportunity.discovered_at = datetime.utcnow() - timedelta(days=2)
     records[1].opportunity.discovered_at = datetime.utcnow() - timedelta(days=1)
 
-    store.upsert(records[0])
-    store.upsert(records[1])
+    store.upsert_for_user("user-1", records[0])
+    store.upsert_for_user("user-1", records[1])
 
-    sorted_records = store.list_all()
+    sorted_records = store.list_for_user("user-1")
 
     assert len(sorted_records) == 2
     assert sorted_records[0].opportunity.discovered_at > sorted_records[1].opportunity.discovered_at
@@ -51,10 +51,10 @@ def test_postgres_store_returns_records_sorted_by_discovered_date_desc(
 def test_opportunity_agent_run_executes_full_pipeline(store: PostgresStore) -> None:
     agent = OpportunityAgent(store=store)
 
-    records = agent.run(build_request(max_opportunities=4))
+    records = agent.run(user_id="user-1", request=build_request(max_opportunities=4))
 
     assert len(records) == 4
-    assert len(store.list_all()) == 4
+    assert len(store.list_for_user("user-1")) == 4
 
     for record in records:
         assert record.submitted_at is not None

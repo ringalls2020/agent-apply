@@ -25,10 +25,15 @@ from .logging_config import (
 from .models import (
     AgentRunRequest,
     AgentRunResponse,
+    AuthLoginRequest,
+    AuthResponse,
+    AuthSignupRequest,
+    AuthUserProfile,
     ApplyAttemptCallback,
     ApplyRunStartRequest,
     ApplyRunStartResponse,
     ApplyRunStatusResponse,
+    CandidateProfile,
     CallbackAckResponse,
     MatchRunStartRequest,
     MatchRunStartResponse,
@@ -40,7 +45,13 @@ from .models import (
     UserResponse,
     UserUpsertRequest,
 )
-from .security import SecurityError, verify_body_signature, verify_hs256_jwt
+from .security import (
+    SecurityError,
+    create_hs256_jwt,
+    hash_password,
+    verify_body_signature,
+    verify_hs256_jwt,
+)
 from .services import (
     CloudOrchestrationService,
     MainPlatformStore,
@@ -124,6 +135,66 @@ def create_app(
     fastapi_app.state.required_client_subject = os.getenv(
         "CLOUD_CALLBACK_REQUIRED_CLIENT_SUBJECT", ""
     ).strip()
+    fastapi_app.state.user_auth_signing_secret = os.getenv(
+        "USER_AUTH_SIGNING_SECRET", "dev-user-auth-secret"
+    )
+    fastapi_app.state.user_auth_issuer = os.getenv("USER_AUTH_ISSUER", "main-api")
+    fastapi_app.state.user_auth_audience = os.getenv(
+        "USER_AUTH_AUDIENCE", "agent-apply-frontend"
+    )
+    fastapi_app.state.user_auth_token_ttl_seconds = max(
+        1, _parse_int_env("USER_AUTH_TOKEN_TTL_SECONDS", 7 * 24 * 60 * 60)
+    )
+
+    def _create_user_access_token(user_id: str) -> str:
+        return create_hs256_jwt(
+            payload={"sub": user_id},
+            secret=fastapi_app.state.user_auth_signing_secret,
+            issuer=fastapi_app.state.user_auth_issuer,
+            audience=fastapi_app.state.user_auth_audience,
+            expires_in_seconds=fastapi_app.state.user_auth_token_ttl_seconds,
+        )
+
+    def _authenticated_user_id_from_request(request: Request) -> str:
+        token = _extract_bearer_token(request.headers.get("authorization"))
+        try:
+            claims = verify_hs256_jwt(
+                token=token,
+                secret=fastapi_app.state.user_auth_signing_secret,
+                audience=fastapi_app.state.user_auth_audience,
+                issuer=fastapi_app.state.user_auth_issuer,
+            )
+        except SecurityError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Invalid user auth token: {exc}",
+            ) from exc
+
+        user_id = str(claims.get("sub", "")).strip()
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User auth token missing subject",
+            )
+        return user_id
+
+    def _build_auth_user_profile(user_id: str) -> AuthUserProfile:
+        user = fastapi_app.state.main_store.get_user(user_id)
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found for token subject",
+            )
+        preferences = fastapi_app.state.main_store.get_preferences(user_id)
+        resume = fastapi_app.state.main_store.get_resume(user_id)
+        return AuthUserProfile(
+            id=user.id,
+            full_name=user.full_name,
+            email=user.email,
+            interests=preferences.interests if preferences else [],
+            applications_per_day=preferences.applications_per_day if preferences else 25,
+            resume_filename=resume.filename if resume else None,
+        )
 
     @fastapi_app.middleware("http")
     async def request_logging_middleware(request: Request, call_next):
@@ -178,30 +249,125 @@ def create_app(
         logger.debug("health_checked")
         return {"status": "ok"}
 
-    # Legacy compatibility routes.
-    @fastapi_app.post("/agent/run", response_model=AgentRunResponse)
-    def run_agent(payload: AgentRunRequest) -> AgentRunResponse:
-        logger.info(
-            "run_agent_requested",
-            extra={
-                "max_opportunities": payload.max_opportunities,
-                "interest_count": len(payload.profile.interests),
-            },
+    # Legacy compatibility routes kept as explicit deprecations.
+    @fastapi_app.post("/agent/run")
+    def run_agent_legacy() -> None:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Deprecated endpoint. Use POST /v1/agent/run with Authorization bearer token.",
         )
-        applications = fastapi_app.state.agent.run(payload)
-        logger.info(
-            "run_agent_completed",
-            extra={"application_count": len(applications)},
+
+    @fastapi_app.get("/applications")
+    def list_applications_legacy() -> None:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Deprecated endpoint. Use GET /v1/applications with Authorization bearer token.",
+        )
+
+    @fastapi_app.post(
+        "/v1/auth/signup",
+        response_model=AuthResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def auth_signup(payload: AuthSignupRequest) -> AuthResponse:
+        existing_user = fastapi_app.state.main_store.get_user_by_email(payload.email)
+        if existing_user is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Account with this email already exists.",
+            )
+
+        user_id = str(uuid4())
+        user = fastapi_app.state.orchestrator.upsert_user(
+            user_id=user_id,
+            payload=UserUpsertRequest(
+                full_name=payload.full_name,
+                email=payload.email,
+            ),
+        )
+        password_salt, password_hash = hash_password(payload.password)
+        fastapi_app.state.main_store.set_user_password(
+            user_id=user.id,
+            password_salt=password_salt,
+            password_hash=password_hash,
+        )
+
+        return AuthResponse(
+            token=_create_user_access_token(user.id),
+            user=_build_auth_user_profile(user.id),
+        )
+
+    @fastapi_app.post("/v1/auth/login", response_model=AuthResponse)
+    def auth_login(payload: AuthLoginRequest) -> AuthResponse:
+        user = fastapi_app.state.main_store.verify_user_credentials(
+            email=payload.email,
+            password=payload.password,
+        )
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid credentials.",
+            )
+        return AuthResponse(
+            token=_create_user_access_token(user.id),
+            user=_build_auth_user_profile(user.id),
+        )
+
+    @fastapi_app.get("/v1/auth/me", response_model=AuthUserProfile)
+    def auth_me(request: Request) -> AuthUserProfile:
+        user_id = _authenticated_user_id_from_request(request)
+        return _build_auth_user_profile(user_id)
+
+    @fastapi_app.post("/v1/agent/run", response_model=AgentRunResponse)
+    def run_agent_for_authenticated_user(request: Request) -> AgentRunResponse:
+        user_id = _authenticated_user_id_from_request(request)
+        user = fastapi_app.state.main_store.get_user(user_id)
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found for token subject",
+            )
+
+        preferences = fastapi_app.state.main_store.get_preferences(user_id)
+        if preferences is None or not preferences.interests:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="User preferences not found",
+            )
+
+        resume = fastapi_app.state.main_store.get_resume(user_id)
+        if resume is None or not resume.resume_text.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="User resume not found",
+            )
+
+        max_opportunities = min(max(preferences.applications_per_day, 1), 25)
+        agent_request = AgentRunRequest(
+            profile=CandidateProfile(
+                full_name=user.full_name,
+                email=user.email,
+                resume_text=resume.resume_text,
+                interests=preferences.interests,
+            ),
+            max_opportunities=max_opportunities,
+        )
+        applications = fastapi_app.state.agent.run(
+            user_id=user_id,
+            request=agent_request,
         )
         return AgentRunResponse(applications=applications)
 
-    @fastapi_app.get("/applications", response_model=AgentRunResponse)
-    def list_applications() -> AgentRunResponse:
-        applications = fastapi_app.state.store.list_all()
-        logger.info(
-            "applications_listed",
-            extra={"application_count": len(applications)},
-        )
+    @fastapi_app.get("/v1/applications", response_model=AgentRunResponse)
+    def list_user_applications(request: Request) -> AgentRunResponse:
+        user_id = _authenticated_user_id_from_request(request)
+        user = fastapi_app.state.main_store.get_user(user_id)
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found for token subject",
+            )
+        applications = fastapi_app.state.store.list_for_user(user_id)
         return AgentRunResponse(applications=applications)
 
     @fastapi_app.get("/admin", response_class=HTMLResponse)

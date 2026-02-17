@@ -4,6 +4,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -16,8 +17,12 @@ from .db import Base
 
 class ApplicationRecordRow(Base):
     __tablename__ = "applications"
+    __table_args__ = (
+        Index("ix_applications_user_discovered_at", "user_id", "opportunity_discovered_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
 
     opportunity_id: Mapped[str] = mapped_column(String(36), nullable=False)
@@ -44,6 +49,8 @@ class UserRow(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    password_salt: Mapped[str | None] = mapped_column(String(255))
+    password_hash: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow
     )

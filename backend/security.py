@@ -92,6 +92,37 @@ def verify_hs256_jwt(
     return claims
 
 
+def hash_password(password: str) -> tuple[str, str]:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.scrypt(
+        _to_bytes(password),
+        salt=salt,
+        n=2**14,
+        r=8,
+        p=1,
+        dklen=64,
+    )
+    return salt.hex(), digest.hex()
+
+
+def verify_password(password: str, salt_hex: str, expected_hash_hex: str) -> bool:
+    try:
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(expected_hash_hex)
+    except ValueError:
+        return False
+
+    actual = hashlib.scrypt(
+        _to_bytes(password),
+        salt=salt,
+        n=2**14,
+        r=8,
+        p=1,
+        dklen=len(expected),
+    )
+    return hmac.compare_digest(actual, expected)
+
+
 def create_body_signature(*, body: bytes, timestamp: str, nonce: str, secret: str) -> str:
     payload = b".".join([_to_bytes(timestamp), _to_bytes(nonce), body])
     digest = hmac.new(_to_bytes(secret), payload, hashlib.sha256).hexdigest()

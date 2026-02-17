@@ -1,6 +1,6 @@
 # Frontend (Next.js + GraphQL)
 
-This frontend is a complete Next.js app with an integrated GraphQL API (`/api/graphql`) and UI flows for:
+This frontend is a complete Next.js app with an integrated GraphQL BFF (`/api/graphql`) that proxies to the backend REST API, and UI flows for:
 
 - account signup/login,
 - user preferences management,
@@ -19,6 +19,12 @@ npm run dev
 
 Open `http://localhost:3000`.
 
+Set backend base URL for the GraphQL BFF (server-side):
+
+```bash
+export BACKEND_API_BASE_URL=http://127.0.0.1:8000
+```
+
 ## GraphQL operations
 
 ### Queries
@@ -34,6 +40,6 @@ Open `http://localhost:3000`.
 
 ## Auth model
 
-- Signup/login returns a session token.
+- Signup/login returns a backend-issued JWT.
 - Token is stored in `localStorage` as `agent_apply_token`.
 - Apollo client sends it as `Authorization: Bearer <token>`.

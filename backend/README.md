@@ -22,6 +22,12 @@ Legacy demo endpoints (`/agent/run`, `/applications`, `/admin`) are still presen
 
 ## Key endpoints
 
+### User auth
+
+- `POST /v1/auth/signup`
+- `POST /v1/auth/login`
+- `GET /v1/auth/me`
+
 ### Core data
 
 - `PUT /v1/users/{user_id}`
@@ -37,6 +43,13 @@ Legacy demo endpoints (`/agent/run`, `/applications`, `/admin`) are still presen
 - `GET /v1/users/{user_id}/match-runs/{run_id}`
 - `POST /v1/users/{user_id}/apply-runs`
 - `GET /v1/users/{user_id}/apply-runs/{run_id}`
+
+### Per-user legacy-compatible apply flow
+
+- `POST /v1/agent/run`
+- `GET /v1/applications`
+
+Legacy routes `/agent/run` and `/applications` now return `410 Gone`.
 
 ### Callback ingestion
 
@@ -83,6 +96,13 @@ Callback requirements:
 ### Limits
 
 - `DEFAULT_APPLY_DAILY_CAP` (default: `25`)
+
+### User auth
+
+- `USER_AUTH_SIGNING_SECRET` (default: `dev-user-auth-secret`)
+- `USER_AUTH_ISSUER` (default: `main-api`)
+- `USER_AUTH_AUDIENCE` (default: `agent-apply-frontend`)
+- `USER_AUTH_TOKEN_TTL_SECONDS` (default: `604800`)
 
 ## Local run
 

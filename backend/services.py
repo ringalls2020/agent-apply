@@ -46,13 +46,16 @@ from .models import (
     UserResponse,
     UserUpsertRequest,
 )
-from .security import sha256_hex
+from .security import sha256_hex, verify_password
 
 logger = logging.getLogger(__name__)
 
 
 class ApplicationStore(Protocol):
-    def upsert(self, record: ApplicationRecord) -> ApplicationRecord:
+    def upsert_for_user(self, user_id: str, record: ApplicationRecord) -> ApplicationRecord:
+        ...
+
+    def list_for_user(self, user_id: str) -> List[ApplicationRecord]:
         ...
 
     def list_all(self) -> List[ApplicationRecord]:
@@ -64,10 +67,12 @@ class PostgresStore:
         self._session_factory = session_factory
         logger.debug("postgres_store_initialized")
 
-    def upsert(self, record: ApplicationRecord) -> ApplicationRecord:
+    def upsert_for_user(
+        self, user_id: str, record: ApplicationRecord
+    ) -> ApplicationRecord:
         logger.debug(
             "store_upsert_started",
-            extra={"record_id": record.id, "status": record.status.value},
+            extra={"record_id": record.id, "status": record.status.value, "user_id": user_id},
         )
         try:
             with self._session_factory() as session:
@@ -77,7 +82,7 @@ class PostgresStore:
                     row = ApplicationRecordRow(id=record.id, status=record.status.value)
                     session.add(row)
 
-                self._sync_row(row=row, record=record)
+                self._sync_row(row=row, record=record, user_id=user_id)
                 session.commit()
                 session.refresh(row)
 
@@ -88,9 +93,29 @@ class PostgresStore:
 
         logger.debug(
             "store_upsert_completed",
-            extra={"record_id": stored.id, "status": stored.status.value},
+            extra={"record_id": stored.id, "status": stored.status.value, "user_id": user_id},
         )
         return stored
+
+    def list_for_user(self, user_id: str) -> List[ApplicationRecord]:
+        logger.debug("store_list_for_user_started", extra={"user_id": user_id})
+        try:
+            with self._session_factory() as session:
+                rows = session.scalars(
+                    select(ApplicationRecordRow)
+                    .where(ApplicationRecordRow.user_id == user_id)
+                    .order_by(ApplicationRecordRow.opportunity_discovered_at.desc())
+                ).all()
+                records = [self._to_record(row) for row in rows]
+        except Exception:
+            logger.exception("store_list_for_user_failed", extra={"user_id": user_id})
+            raise
+
+        logger.debug(
+            "store_list_for_user_completed",
+            extra={"records": len(records), "user_id": user_id},
+        )
+        return records
 
     def list_all(self) -> List[ApplicationRecord]:
         logger.debug("store_list_all_started")
@@ -110,7 +135,8 @@ class PostgresStore:
         return records
 
     @staticmethod
-    def _sync_row(*, row: ApplicationRecordRow, record: ApplicationRecord) -> None:
+    def _sync_row(*, row: ApplicationRecordRow, record: ApplicationRecord, user_id: str) -> None:
+        row.user_id = user_id
         row.status = record.status.value
         row.opportunity_id = record.opportunity.id
         row.opportunity_title = record.opportunity.title
@@ -180,10 +206,11 @@ class OpportunityAgent:
         self.store = store
         logger.debug("opportunity_agent_initialized")
 
-    def run(self, request: AgentRunRequest) -> List[ApplicationRecord]:
+    def run(self, *, user_id: str, request: AgentRunRequest) -> List[ApplicationRecord]:
         logger.info(
             "agent_run_started",
             extra={
+                "user_id": user_id,
                 "max_opportunities": request.max_opportunities,
                 "interest_count": len(request.profile.interests),
             },
@@ -203,7 +230,7 @@ class OpportunityAgent:
             applied_record = self._apply(opp)
             enriched_record = self._find_point_of_contact(applied_record)
             notified_record = self._notify(enriched_record)
-            records.append(self.store.upsert(notified_record))
+            records.append(self.store.upsert_for_user(user_id, notified_record))
 
         logger.info("agent_run_completed", extra={"generated_records": len(records)})
         return records
@@ -293,6 +320,10 @@ class MainPlatformStore:
         self._session_factory = session_factory
         logger.debug("main_platform_store_initialized")
 
+    @staticmethod
+    def _normalize_email(email: str) -> str:
+        return email.strip().lower()
+
     def upsert_user(self, user_id: str, payload: UserUpsertRequest) -> UserResponse:
         now = datetime.utcnow()
         with self._session_factory() as session:
@@ -301,18 +332,55 @@ class MainPlatformStore:
                 row = UserRow(
                     id=user_id,
                     full_name=payload.full_name.strip(),
-                    email=payload.email.strip().lower(),
+                    email=self._normalize_email(payload.email),
                     created_at=now,
                     updated_at=now,
                 )
                 session.add(row)
             else:
                 row.full_name = payload.full_name.strip()
-                row.email = payload.email.strip().lower()
+                row.email = self._normalize_email(payload.email)
                 row.updated_at = now
 
             session.commit()
             session.refresh(row)
+            return self._to_user(row)
+
+    def get_user_by_email(self, email: str) -> UserResponse | None:
+        normalized_email = self._normalize_email(email)
+        with self._session_factory() as session:
+            row = session.scalar(
+                select(UserRow).where(UserRow.email == normalized_email).limit(1)
+            )
+            if row is None:
+                return None
+            return self._to_user(row)
+
+    def set_user_password(
+        self, *, user_id: str, password_salt: str, password_hash: str
+    ) -> None:
+        now = datetime.utcnow()
+        with self._session_factory() as session:
+            row = session.get(UserRow, user_id)
+            if row is None:
+                raise ValueError("User not found")
+            row.password_salt = password_salt
+            row.password_hash = password_hash
+            row.updated_at = now
+            session.commit()
+
+    def verify_user_credentials(self, *, email: str, password: str) -> UserResponse | None:
+        normalized_email = self._normalize_email(email)
+        with self._session_factory() as session:
+            row = session.scalar(
+                select(UserRow).where(UserRow.email == normalized_email).limit(1)
+            )
+            if row is None:
+                return None
+            if not row.password_salt or not row.password_hash:
+                return None
+            if not verify_password(password, row.password_salt, row.password_hash):
+                return None
             return self._to_user(row)
 
     def get_user(self, user_id: str) -> UserResponse | None:
