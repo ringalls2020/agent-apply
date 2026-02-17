@@ -1,9 +1,14 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ApolloProvider, useMutation } from "@apollo/client";
 
+import { AuthShell } from "@/components/layout/AuthShell";
+import { Button } from "@/components/ui/Button";
+import { FormField } from "@/components/ui/FormField";
+import { InlineAlert } from "@/components/ui/InlineAlert";
 import { getClient } from "@/lib/apollo";
 import { SIGNUP } from "@/graphql/operations";
 
@@ -16,22 +21,22 @@ function SignupInner() {
   const [signup, { loading }] = useMutation(SIGNUP);
 
   return (
-    <div className="card" style={{ maxWidth: 520, margin: "0 auto" }}>
-      <h2>Create your account</h2>
-      <label>Name</label>
-      <input value={name} onChange={(e) => setName(e.target.value)} />
-      <label>Email</label>
-      <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" />
-      <label>Password</label>
-      <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" />
-      {error && <p style={{ color: "#fca5a5" }}>{error}</p>}
-      <button
-        disabled={loading}
-        onClick={async () => {
+    <AuthShell
+      title="Create your account"
+      subtitle="Set up your profile and start automating qualified job applications."
+    >
+      <form
+        className="space-y-4"
+        onSubmit={async (event) => {
+          event.preventDefault();
           setError("");
           try {
             const result = await signup({ variables: { name, email, password } });
-            const token = result.data.signup.token;
+            const token = result.data?.signup?.token;
+            if (!token) {
+              setError("Could not sign up.");
+              return;
+            }
             localStorage.setItem("agent_apply_token", token);
             document.cookie = `agent_apply_token=${encodeURIComponent(token)}; Path=/; SameSite=Lax`;
             router.push("/applications");
@@ -40,9 +45,50 @@ function SignupInner() {
           }
         }}
       >
-        {loading ? "Creating..." : "Sign up"}
-      </button>
-    </div>
+        <FormField
+          id="signup-name"
+          label="Full name"
+          placeholder="Alex Morgan"
+          autoComplete="name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          required
+        />
+        <FormField
+          id="signup-email"
+          label="Email"
+          type="email"
+          placeholder="you@example.com"
+          autoComplete="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          required
+        />
+        <FormField
+          id="signup-password"
+          label="Password"
+          type="password"
+          placeholder="Choose a secure password"
+          autoComplete="new-password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          required
+        />
+
+        {error && <InlineAlert variant="error">{error}</InlineAlert>}
+
+        <Button type="submit" fullWidth loading={loading} loadingText="Creating account...">
+          Sign up
+        </Button>
+
+        <p className="text-center text-sm text-muted">
+          Already registered?{" "}
+          <Link href="/login" className="font-semibold text-accentSoft hover:text-accent">
+            Login
+          </Link>
+        </p>
+      </form>
+    </AuthShell>
   );
 }
 

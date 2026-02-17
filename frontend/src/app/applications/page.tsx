@@ -1,82 +1,205 @@
 "use client";
 
 import { ApolloProvider, useMutation, useQuery } from "@apollo/client";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
+import { AppShell } from "@/components/layout/AppShell";
 import { Nav } from "@/components/Nav";
+import { Button } from "@/components/ui/Button";
+import { Card, CardDescription, CardTitle } from "@/components/ui/Card";
+import { DataTable, type DataTableColumn } from "@/components/ui/DataTable";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { InlineAlert } from "@/components/ui/InlineAlert";
+import { LoadingState } from "@/components/ui/LoadingState";
+import { StatusPill } from "@/components/ui/StatusPill";
 import { APPLICATIONS, ME, RUN_AGENT } from "@/graphql/operations";
 import { getClient } from "@/lib/apollo";
 import { useRequireAuth } from "@/lib/useRequireAuth";
 
+type Application = {
+  id: string;
+  title: string;
+  company: string;
+  status: string;
+  contactName: string | null;
+  contactEmail: string | null;
+  submittedAt: string;
+};
+
+type ApplicationsQuery = {
+  applications: Application[];
+};
+
+type UserProfile = {
+  name: string;
+  interests: string[];
+  applicationsPerDay: number;
+};
+
+type MeQuery = {
+  me: UserProfile | null;
+};
+
+function formatSubmittedAt(dateString: string) {
+  const parsed = new Date(dateString);
+  if (Number.isNaN(parsed.getTime())) return "-";
+  return parsed.toLocaleString();
+}
+
 function ApplicationsInner() {
   const { isCheckingAuth, isAuthenticated } = useRequireAuth();
   const [error, setError] = useState("");
-  const { data: meData } = useQuery(ME, { skip: !isAuthenticated });
-  const { data, loading, refetch } = useQuery(APPLICATIONS, { skip: !isAuthenticated });
+  const { data: meData } = useQuery<MeQuery>(ME, { skip: !isAuthenticated });
+  const { data, loading, refetch } = useQuery<ApplicationsQuery>(APPLICATIONS, { skip: !isAuthenticated });
   const [runAgent, { loading: running }] = useMutation(RUN_AGENT);
 
-  if (isCheckingAuth) return <p>Checking session...</p>;
-  if (!isAuthenticated) return <p>Redirecting to login...</p>;
+  const columns = useMemo<DataTableColumn<Application>[]>(
+    () => [
+      {
+        id: "company",
+        header: "Company",
+        render: (app) => <span className="font-medium">{app.company}</span>,
+      },
+      {
+        id: "role",
+        header: "Role",
+        render: (app) => app.title,
+      },
+      {
+        id: "status",
+        header: "Status",
+        render: (app) => <StatusPill status={app.status} />,
+      },
+      {
+        id: "contact",
+        header: "Point of contact",
+        mobileLabel: "Contact",
+        render: (app) => {
+          if (!app.contactName && !app.contactEmail) {
+            return <span className="text-muted">No contact found</span>;
+          }
+
+          return (
+            <div className="space-y-0.5">
+              <p className="font-medium text-foreground">{app.contactName ?? "Unknown contact"}</p>
+              <p className="text-xs text-muted">{app.contactEmail ?? "No email"}</p>
+            </div>
+          );
+        },
+      },
+      {
+        id: "submitted",
+        header: "Submitted",
+        render: (app) => <span className="text-muted">{formatSubmittedAt(app.submittedAt)}</span>,
+      },
+    ],
+    [],
+  );
+
+  if (isCheckingAuth) {
+    return (
+      <AppShell>
+        <LoadingState label="Checking session..." />
+      </AppShell>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <AppShell>
+        <LoadingState label="Redirecting to login..." />
+      </AppShell>
+    );
+  }
 
   const apps = data?.applications ?? [];
+  const profile = meData?.me;
 
   return (
-    <>
+    <AppShell className="pb-8">
       <Nav />
-      <div className="grid grid-3" style={{ marginBottom: 16 }}>
-        <div className="card"><h3>Applications</h3><p>{apps.length}</p></div>
-        <div className="card"><h3>Daily Rate</h3><p>{meData?.me?.applicationsPerDay ?? "-"}</p></div>
-        <div className="card"><h3>Interests</h3><p>{(meData?.me?.interests ?? []).join(", ") || "-"}</p></div>
-      </div>
 
-      <div className="card">
-        <h2>Application review</h2>
-        <p className="small">Review all applications submitted by the agent and contacts found per role.</p>
-        <button
-          disabled={running}
-          onClick={async () => {
-            setError("");
-            try {
-              await runAgent();
-              await refetch();
-            } catch (err: unknown) {
-              setError(err instanceof Error ? err.message : "Could not run agent.");
-            }
-          }}
-          style={{ marginBottom: 14 }}
-        >
-          {running ? "Running agent..." : "Run agent now"}
-        </button>
-        {error && <p style={{ color: "#fca5a5" }}>{error}</p>}
+      <section className="mb-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        <Card variant="metric" className="space-y-1">
+          <CardTitle>Applications</CardTitle>
+          <p className="text-3xl font-semibold text-foreground">{apps.length}</p>
+          <CardDescription>Total runs captured in your pipeline</CardDescription>
+        </Card>
+
+        <Card variant="metric" className="space-y-1">
+          <CardTitle>Daily Rate</CardTitle>
+          <p className="text-3xl font-semibold text-foreground">{profile?.applicationsPerDay ?? "-"}</p>
+          <CardDescription>Configured automation velocity</CardDescription>
+        </Card>
+
+        <Card variant="metric" className="space-y-1 sm:col-span-2 xl:col-span-1">
+          <CardTitle>Interests</CardTitle>
+          <p className="text-sm text-foreground">{profile?.interests?.join(", ") || "No interest tags configured"}</p>
+          <CardDescription>Active target domains for matching</CardDescription>
+        </Card>
+      </section>
+
+      <Card className="space-y-4" variant="elevated">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-2xl font-semibold text-foreground">Application review</h2>
+            <p className="mt-1 text-sm text-muted">
+              Review all submissions generated by the agent and inspect matched contacts.
+            </p>
+          </div>
+          <Button
+            loading={running}
+            loadingText="Running agent..."
+            onClick={async () => {
+              setError("");
+              try {
+                await runAgent();
+                await refetch();
+              } catch (err: unknown) {
+                setError(err instanceof Error ? err.message : "Could not run agent.");
+              }
+            }}
+          >
+            Run agent now
+          </Button>
+        </div>
+
+        {error && <InlineAlert variant="error">{error}</InlineAlert>}
 
         {loading ? (
-          <p>Loading applications...</p>
+          <LoadingState label="Loading applications..." className="min-h-[240px]" />
         ) : (
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Company</th>
-                <th>Role</th>
-                <th>Status</th>
-                <th>Point of Contact</th>
-                <th>Submitted</th>
-              </tr>
-            </thead>
-            <tbody>
-              {apps.map((app: any) => (
-                <tr key={app.id}>
-                  <td>{app.company}</td>
-                  <td>{app.title}</td>
-                  <td>{app.status}</td>
-                  <td>{app.contactName} ({app.contactEmail})</td>
-                  <td>{new Date(app.submittedAt).toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <DataTable
+            data={apps}
+            columns={columns}
+            rowKey={(app) => app.id}
+            emptyState={
+              <EmptyState
+                title="No applications yet"
+                description="Trigger the automation to generate the first application attempts for your configured interests."
+                action={
+                  <Button
+                    loading={running}
+                    loadingText="Running agent..."
+                    onClick={async () => {
+                      setError("");
+                      try {
+                        await runAgent();
+                        await refetch();
+                      } catch (err: unknown) {
+                        setError(err instanceof Error ? err.message : "Could not run agent.");
+                      }
+                    }}
+                  >
+                    Run agent now
+                  </Button>
+                }
+              />
+            }
+          />
         )}
-      </div>
-    </>
+      </Card>
+    </AppShell>
   );
 }
 
