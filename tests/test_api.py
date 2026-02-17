@@ -20,6 +20,24 @@ def test_health_endpoint_returns_ok(test_client: TestClient) -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_health_endpoint_returns_generated_request_id_header(
+    test_client: TestClient,
+) -> None:
+    response = test_client.get("/health")
+
+    assert response.status_code == 200
+    assert response.headers.get("x-request-id")
+
+
+def test_health_endpoint_reuses_incoming_request_id_header(
+    test_client: TestClient,
+) -> None:
+    response = test_client.get("/health", headers={"x-request-id": "req-123"})
+
+    assert response.status_code == 200
+    assert response.headers.get("x-request-id") == "req-123"
+
+
 def test_agent_run_and_list_applications_endpoints(test_client: TestClient) -> None:
     payload = {
         "profile": {

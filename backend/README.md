@@ -51,6 +51,10 @@ Environment variables:
 - `DATABASE_URL` (optional override)
   - PostgreSQL example: `postgresql+psycopg://<db_user>:<db_password>@localhost:5432/agent_apply`
   - SQLite example: `sqlite+pysqlite:///./agent_apply.db`
+- `LOG_LEVEL` (optional, default `INFO`)
+  - Typical values: `DEBUG`, `INFO`, `WARNING`, `ERROR`
+- `SQLALCHEMY_LOG_QUERIES` (optional, default `false`)
+  - Set to `true` to enable SQLAlchemy engine query logs.
 
 Default fallback when `DATABASE_URL` is not set:
 
@@ -125,6 +129,21 @@ Server defaults:
 
 Returned API records are already in `notified` state for this prototype.
 
+### 6.4 Logging and request observability
+
+The backend emits structured JSON logs to stdout with:
+
+- timestamp, level, logger name, and message
+- request context: `request_id`, `http_method`, `http_path`
+- route/service/store fields (counts, IDs, latency, status code) via structured `extra` keys
+
+`/agent/run`, `/applications`, and `/admin` route activity is logged, along with DB setup/disposal and key service pipeline steps.
+
+Each HTTP request is assigned an `X-Request-ID`:
+
+- Incoming `X-Request-ID` is reused when provided.
+- Otherwise a new UUID is generated and returned in the response header.
+
 ## 7. API Reference
 
 ### 7.1 GET `/health`
@@ -198,7 +217,7 @@ Test behavior:
 - No auth or route-level authorization.
 - No background job queue; all processing is synchronous in request cycle.
 - No external provider integrations (search, application automation, contact enrichment, notifications are mocked).
-- No structured logging, tracing, or metrics export.
+- No tracing or metrics export yet (structured logs are available).
 - No migration tool configured yet (schema currently created with SQLAlchemy `create_all`).
 
 ## 10. Productionization Checklist

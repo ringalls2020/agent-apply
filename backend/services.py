@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Callable, List, Protocol
 from uuid import uuid4
@@ -16,6 +17,8 @@ from .models import (
     Opportunity,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class ApplicationStore(Protocol):
     def upsert(self, record: ApplicationRecord) -> ApplicationRecord:
@@ -28,29 +31,52 @@ class ApplicationStore(Protocol):
 class PostgresStore:
     def __init__(self, session_factory: Callable[[], Session]) -> None:
         self._session_factory = session_factory
+        logger.debug("postgres_store_initialized")
 
     def upsert(self, record: ApplicationRecord) -> ApplicationRecord:
-        with self._session_factory() as session:
-            row = session.get(ApplicationRecordRow, record.id)
+        logger.debug(
+            "store_upsert_started",
+            extra={"record_id": record.id, "status": record.status.value},
+        )
+        try:
+            with self._session_factory() as session:
+                row = session.get(ApplicationRecordRow, record.id)
 
-            if row is None:
-                row = ApplicationRecordRow(id=record.id, status=record.status.value)
-                session.add(row)
+                if row is None:
+                    row = ApplicationRecordRow(id=record.id, status=record.status.value)
+                    session.add(row)
 
-            self._sync_row(row=row, record=record)
-            session.commit()
-            session.refresh(row)
+                self._sync_row(row=row, record=record)
+                session.commit()
+                session.refresh(row)
 
-            return self._to_record(row)
+                stored = self._to_record(row)
+        except Exception:
+            logger.exception("store_upsert_failed", extra={"record_id": record.id})
+            raise
+
+        logger.debug(
+            "store_upsert_completed",
+            extra={"record_id": stored.id, "status": stored.status.value},
+        )
+        return stored
 
     def list_all(self) -> List[ApplicationRecord]:
-        with self._session_factory() as session:
-            rows = session.scalars(
-                select(ApplicationRecordRow).order_by(
-                    ApplicationRecordRow.opportunity_discovered_at.desc()
-                )
-            ).all()
-            return [self._to_record(row) for row in rows]
+        logger.debug("store_list_all_started")
+        try:
+            with self._session_factory() as session:
+                rows = session.scalars(
+                    select(ApplicationRecordRow).order_by(
+                        ApplicationRecordRow.opportunity_discovered_at.desc()
+                    )
+                ).all()
+                records = [self._to_record(row) for row in rows]
+        except Exception:
+            logger.exception("store_list_all_failed")
+            raise
+
+        logger.debug("store_list_all_completed", extra={"records": len(records)})
+        return records
 
     @staticmethod
     def _sync_row(*, row: ApplicationRecordRow, record: ApplicationRecord) -> None:
@@ -121,20 +147,41 @@ class OpportunityAgent:
 
     def __init__(self, store: ApplicationStore) -> None:
         self.store = store
+        logger.debug("opportunity_agent_initialized")
 
     def run(self, request: AgentRunRequest) -> List[ApplicationRecord]:
+        logger.info(
+            "agent_run_started",
+            extra={
+                "max_opportunities": request.max_opportunities,
+                "interest_count": len(request.profile.interests),
+            },
+        )
         opportunities = self._discover(request)
         records: List[ApplicationRecord] = []
 
-        for opp in opportunities:
+        for idx, opp in enumerate(opportunities, start=1):
+            logger.debug(
+                "agent_processing_opportunity",
+                extra={
+                    "step_index": idx,
+                    "opportunity_id": opp.id,
+                    "company": opp.company,
+                },
+            )
             applied_record = self._apply(opp)
             enriched_record = self._find_point_of_contact(applied_record)
             notified_record = self._notify(enriched_record)
             records.append(self.store.upsert(notified_record))
 
+        logger.info("agent_run_completed", extra={"generated_records": len(records)})
         return records
 
     def _discover(self, request: AgentRunRequest) -> List[Opportunity]:
+        logger.debug(
+            "agent_discover_started",
+            extra={"max_opportunities": request.max_opportunities},
+        )
         interests = ", ".join(request.profile.interests)
         opportunities = []
 
@@ -152,15 +199,26 @@ class OpportunityAgent:
                 )
             )
 
+        logger.debug(
+            "agent_discover_completed", extra={"discovered_count": len(opportunities)}
+        )
         return opportunities
 
     def _apply(self, opportunity: Opportunity) -> ApplicationRecord:
-        return ApplicationRecord(
+        record = ApplicationRecord(
             id=str(uuid4()),
             opportunity=opportunity,
             status=ApplicationStatus.applied,
             submitted_at=datetime.utcnow(),
         )
+        logger.debug(
+            "agent_apply_completed",
+            extra={
+                "application_id": record.id,
+                "opportunity_id": opportunity.id,
+            },
+        )
+        return record
 
     def _find_point_of_contact(self, record: ApplicationRecord) -> ApplicationRecord:
         contact = Contact(
@@ -170,9 +228,17 @@ class OpportunityAgent:
             source="Company careers page",
         )
         record.contact = contact
+        logger.debug(
+            "agent_contact_enriched",
+            extra={
+                "application_id": record.id,
+                "contact_source": contact.source,
+            },
+        )
         return record
 
     def _notify(self, record: ApplicationRecord) -> ApplicationRecord:
         record.status = ApplicationStatus.notified
         record.notified_at = datetime.utcnow()
+        logger.debug("agent_notify_completed", extra={"application_id": record.id})
         return record
