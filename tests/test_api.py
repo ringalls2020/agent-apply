@@ -115,6 +115,20 @@ def test_client() -> Iterator[TestClient]:
         yield client
 
 
+
+
+def _graphql(client: TestClient, query: str, variables: dict | None = None, token: str | None = None):
+    headers = {}
+    if token:
+        headers["authorization"] = f"Bearer {token}"
+    response = client.post(
+        "/graphql",
+        json={"query": query, "variables": variables or {}},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    return response.json()
+
 def _auth_headers(token: str) -> dict[str, str]:
     return {"authorization": f"Bearer {token}"}
 
@@ -776,3 +790,75 @@ def test_admin_dashboard_secret_is_enforced(monkeypatch: pytest.MonkeyPatch) -> 
         allowed = client.get("/admin", headers={"x-admin-secret": "top-secret"})
     assert forbidden.status_code == 403
     assert allowed.status_code == 200
+
+
+def test_graphql_signup_and_me_flow(test_client: TestClient) -> None:
+    signup = _graphql(
+        test_client,
+        """
+        mutation Signup($fullName: String!, $email: String!, $password: String!) {
+          signup(fullName: $fullName, email: $email, password: $password) {
+            token
+            user {
+              id
+              email
+              fullName
+            }
+          }
+        }
+        """,
+        {
+            "fullName": "Graph QL",
+            "email": "graphql@example.com",
+            "password": "strong-password",
+        },
+    )
+    assert "errors" not in signup
+    token = signup["data"]["signup"]["token"]
+
+    me = _graphql(
+        test_client,
+        """
+        query Me {
+          me {
+            id
+            email
+            fullName
+            applicationsPerDay
+          }
+        }
+        """,
+        token=token,
+    )
+    assert "errors" not in me
+    assert me["data"]["me"]["email"] == "graphql@example.com"
+
+
+def test_graphql_run_agent_mutation_returns_applications(test_client: TestClient) -> None:
+    signup_body = _signup_user(
+        test_client,
+        full_name="Graph Runner",
+        email="graph-runner@example.com",
+    )
+    token = signup_body["token"]
+    user_id = signup_body["user"]["id"]
+    _seed_profile(test_client, user_id=user_id, token=token, applications_per_day=2)
+
+    result = _graphql(
+        test_client,
+        """
+        mutation RunAgent {
+          runAgent {
+            id
+            status
+            opportunity {
+              id
+              title
+            }
+          }
+        }
+        """,
+        token=token,
+    )
+    assert "errors" not in result
+    assert len(result["data"]["runAgent"]) == 2

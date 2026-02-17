@@ -7,10 +7,12 @@ from time import perf_counter, sleep
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
+from fastapi.responses import JSONResponse
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from .cloud_client import CloudAutomationClient, CloudClientError
+from .graphql_schema import schema as graphql_schema
 from .auth import (
     authenticated_user_id_from_request,
     create_user_access_token,
@@ -252,6 +254,25 @@ def create_app(
     def health() -> dict:
         logger.debug("health_checked")
         return {"status": "ok"}
+
+    @fastapi_app.post("/graphql")
+    async def graphql_endpoint(request: Request) -> JSONResponse:
+        payload = await request.json()
+        result = graphql_schema.execute(
+            payload.get("query"),
+            variable_values=payload.get("variables"),
+            operation_name=payload.get("operationName"),
+            context_value={"request": request},
+        )
+        response_payload: dict[str, object] = {}
+        if result.data is not None:
+            response_payload["data"] = result.data
+        if result.errors:
+            response_payload["errors"] = [
+                {"message": error.message}
+                for error in result.errors
+            ]
+        return JSONResponse(response_payload)
 
     # Legacy compatibility routes kept as explicit deprecations.
     @fastapi_app.post("/agent/run")
