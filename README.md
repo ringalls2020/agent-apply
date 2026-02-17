@@ -1,57 +1,55 @@
 # agent-apply
 
-This repository includes:
+Monorepo for a two-plane job automation system:
 
-1. A FastAPI backend in `/backend` with SQL persistence (SQLite by default, PostgreSQL via `DATABASE_URL`).
-2. A Next.js + GraphQL frontend app in `/frontend`.
+1. Main backend (`/backend`) for users/resumes/preferences, run orchestration, and callback ingestion.
+2. Cloud automation service (`/cloud_automation`) for job discovery, match indexing, and autonomous apply workflows.
+3. Next.js frontend (`/frontend`) demo UI.
 
-## Backend quick start
+## Architecture at a glance
 
-Create environment file (optional, for overrides):
+- **Main backend (Render Project A)**
+  - API + system of record (`users`, `resumes`, `preferences`, `job_matches`, `application_attempts`, `external_run_refs`, `webhook_events`)
+  - Calls cloud API with signed service JWT
+  - Receives signed/idempotent apply attempt callbacks
+- **Cloud automation (Render Project B)**
+  - Job discovery adapters + normalized job index
+  - Async match runs and apply runs
+  - Callback emitter back to main backend
+- **Legacy compatibility**
+  - Existing `/agent/run`, `/applications`, and `/admin` endpoints remain available.
 
-```bash
-cp .env.example .env
-```
-
-Run backend:
+## Local setup
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn backend.main:app --reload
 ```
 
-Default local database:
-
-- `sqlite+pysqlite:///./agent_apply.db` (no PostgreSQL required)
-
-Use PostgreSQL instead (optional):
+Copy env file:
 
 ```bash
-export DATABASE_URL=postgresql+psycopg://<db_user>:<db_password>@localhost:5432/agent_apply
+cp .env.example .env
 ```
 
-If your local Postgres cluster doesn't have a `postgres` role, set `<db_user>` to an existing role (often your macOS username).
+## Run main backend
 
-Backend URLs:
+```bash
+uvicorn backend.main:app --reload --port 8000
+```
 
-- `http://127.0.0.1:8000/docs` (Swagger UI)
-- `http://127.0.0.1:8000/redoc` (ReDoc)
-- `http://127.0.0.1:8000/admin` (HTML dashboard)
+Main backend docs: [backend/README.md](backend/README.md)
 
-Complete backend documentation: `backend/README.md`
+## Run cloud automation service
 
-## Frontend capabilities delivered
+```bash
+uvicorn cloud_automation.main:app --reload --port 8100
+```
 
-- ✅ Account signup/login
-- ✅ Preferences page (interests + applications/day rate)
-- ✅ Resume upload flow
-- ✅ Review of submitted applications
-- ✅ Run agent action and contact details visibility
-- ✅ Sleek dark UI with reusable navigation and dashboards
+Cloud service docs: [cloud_automation/README.md](cloud_automation/README.md)
 
-## Frontend quick start
+## Run frontend
 
 ```bash
 cd frontend
@@ -59,20 +57,20 @@ npm install
 npm run dev
 ```
 
-Visit `http://localhost:3000`.
+## Migrations (main backend)
 
-## Frontend structure
+```bash
+alembic upgrade head
+```
 
-- `frontend/src/app/signup/page.tsx` – signup flow
-- `frontend/src/app/login/page.tsx` – login flow
-- `frontend/src/app/preferences/page.tsx` – update preferences and application rate
-- `frontend/src/app/resume/page.tsx` – resume upload
-- `frontend/src/app/applications/page.tsx` – review applications and run agent
-- `frontend/src/app/api/graphql/route.ts` – GraphQL schema + resolvers
-- `frontend/src/lib/store.ts` – in-memory data/session/application model
+## Tests
+
+```bash
+.venv/bin/python -m pytest -q
+```
 
 ## Notes
 
-- The Next.js app is fully functional with in-memory persistence suitable for local/demo use.
-- For production, move storage/session logic from `store.ts` to a durable datastore and hardened auth.
-- The FastAPI backend defaults to a local SQLite file and can be pointed at PostgreSQL via `DATABASE_URL`.
+- Current source adapters are scaffolded synthetic adapters with the target interface for real integrations.
+- Cloud apply service includes autonomous run lifecycle, attempt statuses, and signed callback wiring.
+- For production scraping and auto-submit usage, add legal/compliance review and provider-specific hardening.

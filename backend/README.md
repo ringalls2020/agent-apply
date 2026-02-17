@@ -1,232 +1,103 @@
-# Agent Apply Backend Documentation
+# Main Backend (`backend`)
 
-## 1. Overview
+FastAPI service that is now the **system of record** for:
 
-The backend is a FastAPI service that simulates a job-application automation pipeline:
+- users
+- preferences
+- resumes
+- external match/apply run references
+- matched jobs
+- application attempt outcomes
+- webhook idempotency/audit events
 
-1. Discover matching opportunities.
-2. Create an application record ("apply").
-3. Enrich each record with a recruiter contact.
-4. Mark the record as "notified".
+Legacy demo endpoints (`/agent/run`, `/applications`, `/admin`) are still present.
 
-Application records are persisted in SQL via SQLAlchemy:
+## Stack
 
-- default local runtime: SQLite (`agent_apply.db`)
-- optional external runtime: PostgreSQL (`DATABASE_URL`)
+- FastAPI
+- SQLAlchemy
+- Alembic
+- PostgreSQL/SQLite
+- HTTPX (cloud API client)
 
-## 2. Technology Stack
+## Key endpoints
 
-- Python
-- FastAPI (`fastapi==0.115.0`)
-- Pydantic v2 (`pydantic==2.8.2`)
-- SQLAlchemy (`sqlalchemy==2.0.36`)
-- Psycopg v3 (`psycopg==3.2.3`)
-- Uvicorn (`uvicorn==0.30.6`)
-- Jinja2 (`jinja2==3.1.4`)
-- Pytest + HTTPX (`pytest==8.3.3`, `httpx==0.27.2`)
+### Core data
 
-Dependencies are pinned in `requirements.txt`.
+- `PUT /v1/users/{user_id}`
+- `GET /v1/users/{user_id}`
+- `PUT /v1/users/{user_id}/preferences`
+- `GET /v1/users/{user_id}/preferences`
+- `PUT /v1/users/{user_id}/resume`
+- `GET /v1/users/{user_id}/resume`
 
-## 3. Project Structure
+### Cloud orchestration
 
-```text
-backend/
-  main.py                  # FastAPI app factory + HTTP routes
-  models.py                # Pydantic request/response/domain models
-  db.py                    # Engine/session factory + DATABASE_URL resolution
-  db_models.py             # SQLAlchemy ORM table definitions
-  services.py              # PostgresStore + OpportunityAgent pipeline
-  templates/
-    dashboard.html         # Admin dashboard rendered by /admin
+- `POST /v1/users/{user_id}/match-runs`
+- `GET /v1/users/{user_id}/match-runs/{run_id}`
+- `POST /v1/users/{user_id}/apply-runs`
+- `GET /v1/users/{user_id}/apply-runs/{run_id}`
 
-tests/
-  test_api.py              # Endpoint-level tests
-  test_services.py         # Store + agent pipeline unit tests
-```
+### Callback ingestion
 
-## 4. Configuration
+- `POST /internal/cloud/callbacks/apply-result`
 
-Environment variables:
+Callback requirements:
 
-- `DATABASE_URL` (optional override)
-  - PostgreSQL example: `postgresql+psycopg://<db_user>:<db_password>@localhost:5432/agent_apply`
-  - SQLite example: `sqlite+pysqlite:///./agent_apply.db`
-- `LOG_LEVEL` (optional, default `INFO`)
-  - Typical values: `DEBUG`, `INFO`, `WARNING`, `ERROR`
-- `SQLALCHEMY_LOG_QUERIES` (optional, default `false`)
-  - Set to `true` to enable SQLAlchemy engine query logs.
+- Bearer JWT (`HS256`)
+- Signature headers:
+  - `x-cloud-timestamp`
+  - `x-cloud-nonce`
+  - `x-cloud-signature`
+- Idempotency header:
+  - `x-idempotency-key`
 
-Default fallback when `DATABASE_URL` is not set:
+## Environment variables
 
-- `sqlite+pysqlite:///./agent_apply.db`
+### Database
 
-## 5. Local Setup and Run
+- `DATABASE_URL` (default: `sqlite+pysqlite:///./agent_apply.db`)
 
-From repository root (`/Users/riza/dev-projects/agent-apply`):
+### Logging
 
-1. (Optional) Set `DATABASE_URL` for PostgreSQL:
+- `LOG_LEVEL` (default: `INFO`)
+- `SQLALCHEMY_LOG_QUERIES` (`true`/`false`)
+
+### Cloud client (main -> cloud automation)
+
+- `CLOUD_AUTOMATION_BASE_URL` (default: `http://127.0.0.1:8100`)
+- `CLOUD_AUTOMATION_SERVICE_ID` (default: `main-api`)
+- `CLOUD_AUTOMATION_AUDIENCE` (default: `job-intel-api`)
+- `CLOUD_AUTOMATION_SIGNING_SECRET` (default: `dev-cloud-signing-secret`)
+- `CLOUD_AUTOMATION_TIMEOUT_SECONDS` (default: `20`)
+
+### Callback verification (cloud -> main)
+
+- `CLOUD_CALLBACK_SIGNING_SECRET` (default: falls back to `CLOUD_AUTOMATION_SIGNING_SECRET`)
+- `CLOUD_CALLBACK_SIGNATURE_SECRET` (default: same as signing secret)
+- `CLOUD_CALLBACK_AUDIENCE` (default: `main-api`)
+- `CLOUD_CALLBACK_ISSUER` (default: `job-intel-api`)
+- `CLOUD_CALLBACK_MAX_CLOCK_SKEW_SECONDS` (default: `300`)
+- `CLOUD_CALLBACK_REQUIRED_CLIENT_SUBJECT` (optional mTLS subject assertion)
+
+### Limits
+
+- `DEFAULT_APPLY_DAILY_CAP` (default: `25`)
+
+## Local run
 
 ```bash
-export DATABASE_URL=postgresql+psycopg://<db_user>:<db_password>@localhost:5432/agent_apply
+uvicorn backend.main:app --reload --port 8000
 ```
 
-If your local Postgres instance doesn't include a `postgres` role, use an existing role name (often your macOS username) as `<db_user>`.
-
-You can also skip this step and use the default SQLite database.
-
-2. Start the API:
+## Migrations
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn backend.main:app --reload
+alembic upgrade head
 ```
 
-Server defaults:
-
-- Base URL: `http://127.0.0.1:8000`
-- Swagger UI: `http://127.0.0.1:8000/docs`
-- ReDoc: `http://127.0.0.1:8000/redoc`
-- Admin dashboard: `http://127.0.0.1:8000/admin`
-
-## 6. Architecture and Runtime Behavior
-
-### 6.1 App initialization
-
-`create_app()` in `backend/main.py`:
-
-- Resolves database URL from argument/env.
-- Creates SQLAlchemy engine and session factory.
-- On startup, creates database tables if they do not exist.
-- Attaches `PostgresStore` to `app.state.store`.
-- Attaches `OpportunityAgent` to `app.state.agent`.
-- Disposes the DB engine on app shutdown.
-
-### 6.2 Persistence model
-
-`PostgresStore` persists each `ApplicationRecord` in the `applications` table with relational columns for:
-
-- Core status/timestamps
-- Opportunity fields (`id`, `title`, `company`, `url`, `reason`, `discovered_at`)
-- Contact fields (`name`, `email`, `role`, `source`)
-
-`list_all()` returns records sorted by `opportunity_discovered_at` descending.
-
-### 6.3 Agent pipeline
-
-`OpportunityAgent.run()` executes:
-
-1. `_discover(request)` creates `max_opportunities` synthetic opportunities.
-2. `_apply(opportunity)` creates an `ApplicationRecord` with:
-   - status `applied`
-   - `submitted_at` timestamp
-3. `_find_point_of_contact(record)` attaches a synthetic recruiter contact.
-4. `_notify(record)` sets:
-   - status `notified`
-   - `notified_at` timestamp
-5. Final record is written through `store.upsert(record)`.
-
-Returned API records are already in `notified` state for this prototype.
-
-### 6.4 Logging and request observability
-
-The backend emits structured JSON logs to stdout with:
-
-- timestamp, level, logger name, and message
-- request context: `request_id`, `http_method`, `http_path`
-- route/service/store fields (counts, IDs, latency, status code) via structured `extra` keys
-
-`/agent/run`, `/applications`, and `/admin` route activity is logged, along with DB setup/disposal and key service pipeline steps.
-
-Each HTTP request is assigned an `X-Request-ID`:
-
-- Incoming `X-Request-ID` is reused when provided.
-- Otherwise a new UUID is generated and returned in the response header.
-
-## 7. API Reference
-
-### 7.1 GET `/health`
-
-Health probe endpoint.
-
-Response:
-
-```json
-{
-  "status": "ok"
-}
-```
-
-### 7.2 POST `/agent/run`
-
-Runs the full discovery -> apply -> enrich -> notify pipeline and returns generated application records.
-
-Request schema (`AgentRunRequest`):
-
-```json
-{
-  "profile": {
-    "full_name": "Jane Doe",
-    "email": "jane@example.com",
-    "resume_text": "ML engineer with interest in climate and robotics.",
-    "interests": ["ai", "climate"]
-  },
-  "max_opportunities": 3
-}
-```
-
-Validation rules:
-
-- `profile.interests` must contain at least 1 item.
-- `max_opportunities` must be between 1 and 25 (inclusive).
-
-### 7.3 GET `/applications`
-
-Returns all stored application records in descending `discovered_at` order.
-
-Response schema:
-
-- `AgentRunResponse` (`{"applications": [...]}`)
-
-### 7.4 GET `/admin`
-
-Renders an HTML dashboard (`backend/templates/dashboard.html`) with:
-
-- Summary stats:
-  - Total Opportunities
-  - Applied (records where `submitted_at` exists)
-  - Notified (records where `notified_at` exists)
-- Table of application records and contact details.
-
-## 8. Testing
-
-Run from repository root:
+## Tests
 
 ```bash
-python3 -m pytest -q
+.venv/bin/python -m pytest -q
 ```
-
-Test behavior:
-
-- API and service tests run against an in-memory SQLite database.
-- Local runtime defaults to SQLite and can use PostgreSQL through `DATABASE_URL`.
-
-## 9. Operational Limitations (Current Prototype)
-
-- No auth or route-level authorization.
-- No background job queue; all processing is synchronous in request cycle.
-- No external provider integrations (search, application automation, contact enrichment, notifications are mocked).
-- No tracing or metrics export yet (structured logs are available).
-- No migration tool configured yet (schema currently created with SQLAlchemy `create_all`).
-
-## 10. Productionization Checklist
-
-1. Add schema migrations (Alembic) and versioned database changes.
-2. Add authentication and route-level authorization.
-3. Move pipeline execution to asynchronous workers (e.g., Celery/RQ/Temporal).
-4. Integrate real providers in place of `_discover`, `_apply`, `_find_point_of_contact`, `_notify`.
-5. Add retries, idempotency keys, and dead-letter handling around external calls.
-6. Add observability (structured logs, metrics, tracing, error monitoring).
-7. Add contract tests and integration tests for external provider adapters.
-8. Add environment-based settings and secrets management.

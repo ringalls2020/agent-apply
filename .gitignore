@@ -7,3 +7,4 @@ node_modules/
 __pycache__/
 *.pyc
 agent_apply.db
+jobs_intel.db
