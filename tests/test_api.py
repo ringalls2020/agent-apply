@@ -1,26 +1,22 @@
-from collections.abc import Iterator
-
-import pytest
 from fastapi.testclient import TestClient
 
 from backend.main import create_app
 
 
-@pytest.fixture
-def test_client() -> Iterator[TestClient]:
-    app = create_app(database_url="sqlite+pysqlite:///:memory:")
-    with TestClient(app) as client:
-        yield client
+def client() -> TestClient:
+    app = create_app()
+    return TestClient(app)
 
 
-def test_health_endpoint_returns_ok(test_client: TestClient) -> None:
-    response = test_client.get("/health")
+def test_health_endpoint_returns_ok() -> None:
+    response = client().get("/health")
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
 
-def test_agent_run_and_list_applications_endpoints(test_client: TestClient) -> None:
+def test_agent_run_and_list_applications_endpoints() -> None:
+    test_client = client()
     payload = {
         "profile": {
             "full_name": "Jane Doe",
@@ -45,7 +41,8 @@ def test_agent_run_and_list_applications_endpoints(test_client: TestClient) -> N
     assert all(item["status"] == "notified" for item in run_body["applications"])
 
 
-def test_agent_run_rejects_empty_interests(test_client: TestClient) -> None:
+def test_agent_run_rejects_empty_interests() -> None:
+    test_client = client()
     payload = {
         "profile": {
             "full_name": "Jane Doe",
@@ -61,7 +58,8 @@ def test_agent_run_rejects_empty_interests(test_client: TestClient) -> None:
     assert response.status_code == 422
 
 
-def test_admin_dashboard_renders_html_and_stats(test_client: TestClient) -> None:
+def test_admin_dashboard_renders_html_and_stats() -> None:
+    test_client = client()
 
     payload = {
         "profile": {

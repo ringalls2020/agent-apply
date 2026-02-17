@@ -45,7 +45,7 @@ tests/
 
 Environment variables:
 
-- `DATABASE_URL` (recommended for explicit configuration)
+- `DATABASE_URL` (required for production/local usage)
   - Example: `postgresql+psycopg://postgres:postgres@localhost:5432/agent_apply`
 
 Default fallback when `DATABASE_URL` is not set:
@@ -97,7 +97,7 @@ Server defaults:
 
 - Resolves database URL from argument/env.
 - Creates SQLAlchemy engine and session factory.
-- On startup, creates database tables if they do not exist.
+- Creates database tables if they do not exist.
 - Attaches `PostgresStore` to `app.state.store`.
 - Attaches `OpportunityAgent` to `app.state.agent`.
 - Disposes the DB engine on app shutdown.

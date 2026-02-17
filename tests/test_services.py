@@ -1,21 +1,7 @@
 from datetime import datetime, timedelta
-from collections.abc import Iterator
 
-import pytest
-
-from backend.db import create_db_engine, create_session_factory
-from backend.db_models import Base
 from backend.models import AgentRunRequest, CandidateProfile
-from backend.services import OpportunityAgent, PostgresStore
-
-
-@pytest.fixture
-def store() -> Iterator[PostgresStore]:
-    engine = create_db_engine("sqlite+pysqlite:///:memory:")
-    Base.metadata.create_all(bind=engine)
-    pg_store = PostgresStore(session_factory=create_session_factory(engine))
-    yield pg_store
-    engine.dispose()
+from backend.services import InMemoryStore, OpportunityAgent
 
 
 def build_request(max_opportunities: int = 3) -> AgentRunRequest:
@@ -30,9 +16,8 @@ def build_request(max_opportunities: int = 3) -> AgentRunRequest:
     )
 
 
-def test_postgres_store_returns_records_sorted_by_discovered_date_desc(
-    store: PostgresStore,
-) -> None:
+def test_in_memory_store_returns_records_sorted_by_discovered_date_desc() -> None:
+    store = InMemoryStore()
     agent = OpportunityAgent(store=store)
     records = agent.run(build_request(max_opportunities=2))
 
@@ -48,7 +33,8 @@ def test_postgres_store_returns_records_sorted_by_discovered_date_desc(
     assert sorted_records[0].opportunity.discovered_at > sorted_records[1].opportunity.discovered_at
 
 
-def test_opportunity_agent_run_executes_full_pipeline(store: PostgresStore) -> None:
+def test_opportunity_agent_run_executes_full_pipeline() -> None:
+    store = InMemoryStore()
     agent = OpportunityAgent(store=store)
 
     records = agent.run(build_request(max_opportunities=4))
@@ -65,9 +51,8 @@ def test_opportunity_agent_run_executes_full_pipeline(store: PostgresStore) -> N
         assert record.opportunity.url.startswith("https://")
 
 
-def test_discovery_reuses_interest_keywords_across_generated_roles(
-    store: PostgresStore,
-) -> None:
+def test_discovery_reuses_interest_keywords_across_generated_roles() -> None:
+    store = InMemoryStore()
     agent = OpportunityAgent(store=store)
 
     opportunities = agent._discover(build_request(max_opportunities=5))
