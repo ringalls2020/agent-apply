@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 from datetime import timedelta
 
+import pytest
 from fastapi.testclient import TestClient
 
 from common.time import utc_now
 from cloud_automation.db_models import NormalizedJobRow
 from cloud_automation.main import create_app
 from cloud_automation.security import create_hs256_jwt
+from cloud_automation.services import PlaywrightApplyExecutor, SimulatedApplyExecutor
 
 
 def _auth_headers() -> dict[str, str]:
@@ -196,3 +198,56 @@ def test_search_hides_archived_jobs_by_default_and_includes_with_toggle() -> Non
         assert with_archive.status_code == 200
         archive_ids = {item["id"] for item in with_archive.json()["jobs"]}
         assert {"fresh-no-posted", "old-with-posted", "old-no-posted"}.issubset(archive_ids)
+
+
+def test_apply_dev_review_mode_is_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ENABLE_AUTONOMOUS_BROWSING", "true")
+    monkeypatch.delenv("ENABLE_APPLY_DEV_REVIEW_MODE", raising=False)
+    monkeypatch.setenv("APP_ENV", "development")
+
+    app = create_app(database_url="sqlite+pysqlite:///:memory:")
+    with TestClient(app):
+        executor = app.state.apply._build_executor()
+        assert isinstance(executor, PlaywrightApplyExecutor)
+        assert executor.dev_review_mode is False
+
+
+def test_apply_dev_review_mode_is_ignored_outside_dev_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_AUTONOMOUS_BROWSING", "true")
+    monkeypatch.setenv("ENABLE_APPLY_DEV_REVIEW_MODE", "true")
+    monkeypatch.setenv("APP_ENV", "production")
+
+    app = create_app(database_url="sqlite+pysqlite:///:memory:")
+    with TestClient(app):
+        executor = app.state.apply._build_executor()
+        assert isinstance(executor, PlaywrightApplyExecutor)
+        assert executor.dev_review_mode is False
+
+
+def test_apply_dev_review_mode_requires_autonomous_browsing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_AUTONOMOUS_BROWSING", "false")
+    monkeypatch.setenv("ENABLE_APPLY_DEV_REVIEW_MODE", "true")
+    monkeypatch.setenv("APP_ENV", "development")
+
+    app = create_app(database_url="sqlite+pysqlite:///:memory:")
+    with TestClient(app):
+        executor = app.state.apply._build_executor()
+        assert isinstance(executor, SimulatedApplyExecutor)
+
+
+def test_apply_dev_review_mode_enabled_when_both_flags_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_AUTONOMOUS_BROWSING", "true")
+    monkeypatch.setenv("ENABLE_APPLY_DEV_REVIEW_MODE", "true")
+    monkeypatch.setenv("APP_ENV", "development")
+
+    app = create_app(database_url="sqlite+pysqlite:///:memory:")
+    with TestClient(app):
+        executor = app.state.apply._build_executor()
+        assert isinstance(executor, PlaywrightApplyExecutor)
+        assert executor.dev_review_mode is True

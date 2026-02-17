@@ -38,6 +38,7 @@ from .models import (
     CloudApplyRunRequest,
     CloudMatchRunRequest,
     Contact,
+    FailureCode,
     MatchRunStartRequest,
     MatchRunStartResponse,
     MatchRunStatus,
@@ -1480,7 +1481,10 @@ class CloudOrchestrationService:
         ):
             return
 
-        mapped_status = self._map_apply_attempt_to_application_status(payload.attempt.status)
+        mapped_status = self._map_apply_attempt_to_application_status(
+            payload.attempt.status,
+            payload.attempt.failure_code,
+        )
         self.application_store.update_status_for_user_opportunity(
             user_id=payload.user_ref,
             opportunity_id=payload.attempt.external_job_id,
@@ -1527,9 +1531,14 @@ class CloudOrchestrationService:
     @staticmethod
     def _map_apply_attempt_to_application_status(
         attempt_status: ApplyAttemptStatus,
+        failure_code: FailureCode | None = None,
     ) -> ApplicationStatus:
         if attempt_status in {ApplyAttemptStatus.succeeded, ApplyAttemptStatus.submitted}:
             return ApplicationStatus.applied
-        if attempt_status in {ApplyAttemptStatus.failed, ApplyAttemptStatus.blocked}:
+        if attempt_status == ApplyAttemptStatus.blocked:
+            if failure_code == FailureCode.manual_review_timeout:
+                return ApplicationStatus.review
+            return ApplicationStatus.failed
+        if attempt_status == ApplyAttemptStatus.failed:
             return ApplicationStatus.failed
         return ApplicationStatus.applying

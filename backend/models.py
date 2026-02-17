@@ -101,6 +101,7 @@ class FailureCode(str, Enum):
     form_validation_failed = "form_validation_failed"
     site_blocked = "site_blocked"
     timeout = "timeout"
+    manual_review_timeout = "manual_review_timeout"
     unknown = "unknown"
 
 

@@ -56,6 +56,7 @@ All `/v1/users/{user_id}/*` routes require a user bearer token and enforce `toke
 `POST /v1/agent/run` triggers cloud discovery + matching and persists results per user.
 To avoid synthetic fallback listings, set `USE_ONLY_LIVE_ADAPTERS=true` in the cloud automation env and configure live adapter seed variables.
 When `autosubmit_enabled=true` in the user profile, `/v1/agent/run` also starts async apply runs and application statuses progress via callback updates.
+When cloud apply reports `blocked` with failure code `manual_review_timeout` (dev review mode timeout), the application is mapped back to `review` instead of `failed`.
 
 Legacy routes `/agent/run` and `/applications` now return `410 Gone`.
 

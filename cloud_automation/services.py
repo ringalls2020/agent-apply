@@ -4,6 +4,9 @@ import hashlib
 import json
 import logging
 import os
+import re
+import time
+from contextlib import suppress
 from datetime import timedelta
 from typing import Any, Callable, Dict, List, Protocol
 from uuid import uuid4
@@ -54,6 +57,27 @@ def _json_loads(value: str, default: Any) -> Any:
         return json.loads(value)
     except Exception:
         return default
+
+
+def _bool_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _int_env(name: str, default: int, *, min_value: int | None = None) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        value = default
+    else:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = default
+    if min_value is not None:
+        value = max(value, min_value)
+    return value
 
 
 class JobIntelStore:
@@ -984,19 +1008,77 @@ class SimulatedApplyExecutor:
         )
 
 
+class ApplyExecutionFlags:
+    DEV_REVIEW_ALLOWED_ENVS = {"local", "dev", "development", "test"}
+
+    def __init__(self) -> None:
+        self.autonomous_browsing_enabled = _bool_env("ENABLE_AUTONOMOUS_BROWSING", False)
+        self.dev_review_requested = _bool_env("ENABLE_APPLY_DEV_REVIEW_MODE", False)
+        self.app_env = (
+            os.getenv("APP_ENV", os.getenv("ENV", "development")).strip().lower()
+            or "development"
+        )
+        self.dev_review_env_allowed = self.app_env in self.DEV_REVIEW_ALLOWED_ENVS
+        self.dev_review_enabled = self.dev_review_requested and self.dev_review_env_allowed
+        self.submit_timeout_seconds = _int_env(
+            "APPLY_DEV_REVIEW_SUBMIT_TIMEOUT_SECONDS",
+            300,
+            min_value=1,
+        )
+        self.poll_interval_ms = _int_env(
+            "APPLY_DEV_REVIEW_POLL_INTERVAL_MS",
+            500,
+            min_value=50,
+        )
+        self.slow_mo_ms = _int_env(
+            "APPLY_DEV_REVIEW_SLOW_MO_MS",
+            120,
+            min_value=0,
+        )
+
+
 class PlaywrightApplyExecutor:
-    def __init__(self, *, synthesizer: FormAnswerSynthesizer) -> None:
+    _SUBMIT_URL_TOKENS = (
+        "submitted",
+        "thank-you",
+        "thank_you",
+        "confirmation",
+        "success",
+        "complete",
+        "receipt",
+    )
+    _SUBMIT_TEXT_RE = re.compile(
+        r"(application\s+(has\s+been\s+)?submitted|thank\s+you\s+for\s+applying|your\s+application\s+(has\s+been|was)\s+received|application\s+received)",
+        re.IGNORECASE,
+    )
+
+    def __init__(
+        self,
+        *,
+        synthesizer: FormAnswerSynthesizer,
+        dev_review_mode: bool = False,
+        submit_timeout_seconds: int = 300,
+        poll_interval_ms: int = 500,
+        slow_mo_ms: int = 120,
+    ) -> None:
         self.synthesizer = synthesizer
+        self.dev_review_mode = dev_review_mode
         self.headless = (
             os.getenv("PLAYWRIGHT_HEADLESS", "true").strip().lower()
             in {"1", "true", "yes", "on"}
         )
+        if self.dev_review_mode and self.headless:
+            logger.info("playwright_headless_overridden_for_dev_review_mode")
+            self.headless = False
         self.nav_timeout_ms = int(float(os.getenv("PLAYWRIGHT_NAV_TIMEOUT_SECONDS", "20")) * 1000)
         self.action_timeout_ms = int(float(os.getenv("PLAYWRIGHT_ACTION_TIMEOUT_SECONDS", "5")) * 1000)
         self.capture_screenshots = (
             os.getenv("PLAYWRIGHT_CAPTURE_SCREENSHOTS", "true").strip().lower()
             in {"1", "true", "yes", "on"}
         )
+        self.submit_timeout_seconds = max(int(submit_timeout_seconds), 1)
+        self.poll_interval_seconds = max(int(poll_interval_ms), 50) / 1000.0
+        self.slow_mo_ms = max(int(slow_mo_ms), 0)
 
     def complete_attempt(
         self,
@@ -1004,6 +1086,75 @@ class PlaywrightApplyExecutor:
         attempt: ApplyAttemptRecord,
         request: ApplyRunRequest,
     ) -> ApplyAttemptRecord:
+        preflight_failure = self._preflight_failure(attempt=attempt, request=request)
+        if preflight_failure is not None:
+            return preflight_failure
+
+        browser = None
+        context = None
+        try:
+            from playwright.sync_api import sync_playwright
+
+            launch_kwargs: dict[str, Any] = {"headless": self.headless}
+            if self.dev_review_mode and self.slow_mo_ms > 0:
+                launch_kwargs["slow_mo"] = self.slow_mo_ms
+
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(**launch_kwargs)
+                context = browser.new_context()
+                page = context.new_page()
+                page.set_default_navigation_timeout(self.nav_timeout_ms)
+                page.set_default_timeout(self.action_timeout_ms)
+                page.goto(attempt.job_url, wait_until="domcontentloaded")
+                self._fill_application_form(page=page, request=request)
+
+                if self.capture_screenshots:
+                    page.screenshot(path=f"/tmp/{attempt.attempt_id}.png", full_page=True)
+
+                terminal_attempt = (
+                    self._await_manual_submit(page=page, attempt=attempt)
+                    if self.dev_review_mode
+                    else self._standard_terminal_attempt(attempt)
+                )
+                return terminal_attempt.model_copy(
+                    update={"artifacts": self._build_artifacts(attempt.attempt_id)}
+                )
+        except Exception as exc:
+            logger.exception(
+                "playwright_apply_attempt_failed",
+                extra={"attempt_id": attempt.attempt_id, "job_url": attempt.job_url},
+            )
+            error_text = str(exc).lower()
+            failure_code = (
+                FailureCode.timeout if "timeout" in error_text else FailureCode.site_blocked
+            )
+            return attempt.model_copy(
+                update={
+                    "status": ApplyAttemptStatus.failed,
+                    "failure_code": failure_code,
+                    "failure_reason": str(exc),
+                }
+            )
+        finally:
+            if context is not None:
+                with suppress(Exception):
+                    context.close()
+            if browser is not None:
+                with suppress(Exception):
+                    browser.close()
+
+    @staticmethod
+    def _application_profile(request: ApplyRunRequest) -> dict[str, Any]:
+        profile_payload = request.profile_payload or {}
+        profile = profile_payload.get("application_profile")
+        return profile if isinstance(profile, dict) else {}
+
+    def _preflight_failure(
+        self,
+        *,
+        attempt: ApplyAttemptRecord,
+        request: ApplyRunRequest,
+    ) -> ApplyAttemptRecord | None:
         lower_url = attempt.job_url.lower()
         if "captcha" in lower_url:
             return attempt.model_copy(
@@ -1034,50 +1185,282 @@ class PlaywrightApplyExecutor:
                     "failure_reason": "Missing work authorization answer in application profile",
                 }
             )
+        return None
 
-        _ = self.synthesizer.answer_question(
+    @staticmethod
+    def _split_name(full_name: str) -> tuple[str, str]:
+        tokens = [part for part in full_name.split() if part]
+        if not tokens:
+            return "", ""
+        if len(tokens) == 1:
+            return tokens[0], ""
+        return tokens[0], " ".join(tokens[1:])
+
+    def _build_fill_values(self, request: ApplyRunRequest) -> dict[str, str | bool]:
+        profile_payload = request.profile_payload or {}
+        profile = self._application_profile(request)
+        full_name = str(profile_payload.get("full_name", "")).strip()
+        first_name, last_name = self._split_name(full_name)
+        email = str(profile_payload.get("email", "")).strip()
+        work_auth = self.synthesizer.resolve_typed_answer(
+            request=request,
+            question_key="work_authorization",
+        ) or ""
+        cover_letter = self.synthesizer.answer_question(
             request=request,
             label="Please provide a short, role-specific cover letter",
             name="cover_letter",
             options=None,
         )
 
+        values: dict[str, str | bool] = {
+            "full_name": full_name,
+            "first_name": first_name,
+            "last_name": last_name,
+            "email": email,
+            "phone": str(profile.get("phone", "")).strip(),
+            "city": str(profile.get("city", "")).strip(),
+            "state": str(profile.get("state", "")).strip(),
+            "country": str(profile.get("country", "")).strip(),
+            "linkedin": str(profile.get("linkedin_url", "")).strip(),
+            "github": str(profile.get("github_url", "")).strip(),
+            "portfolio": str(profile.get("portfolio_url", "")).strip(),
+            "work_authorization": work_auth,
+            "requires_sponsorship": bool(profile.get("requires_sponsorship")),
+            "willing_to_relocate": bool(profile.get("willing_to_relocate")),
+            "years_experience": str(profile.get("years_experience", "")).strip(),
+            "cover_letter": cover_letter.strip(),
+        }
+        return values
+
+    def _fill_application_form(self, *, page: Any, request: ApplyRunRequest) -> None:
+        values = self._build_fill_values(request)
+
+        self._fill_text_field(
+            page,
+            selectors=[
+                "input[name*='first'][name*='name']",
+                "input[id*='first'][id*='name']",
+                "input[autocomplete='given-name']",
+            ],
+            value=values["first_name"],
+        )
+        self._fill_text_field(
+            page,
+            selectors=[
+                "input[name*='last'][name*='name']",
+                "input[id*='last'][id*='name']",
+                "input[autocomplete='family-name']",
+            ],
+            value=values["last_name"],
+        )
+        self._fill_text_field(
+            page,
+            selectors=[
+                "input[name='name']",
+                "input[name*='full'][name*='name']",
+                "input[id*='full'][id*='name']",
+                "input[autocomplete='name']",
+            ],
+            value=values["full_name"],
+        )
+        self._fill_text_field(
+            page,
+            selectors=[
+                "input[type='email']",
+                "input[name*='email']",
+                "input[id*='email']",
+                "input[autocomplete='email']",
+            ],
+            value=values["email"],
+        )
+        self._fill_text_field(
+            page,
+            selectors=[
+                "input[type='tel']",
+                "input[name*='phone']",
+                "input[id*='phone']",
+                "input[autocomplete='tel']",
+            ],
+            value=values["phone"],
+        )
+        self._fill_text_field(
+            page,
+            selectors=["input[name*='city']", "input[id*='city']", "input[autocomplete='address-level2']"],
+            value=values["city"],
+        )
+        self._fill_text_field(
+            page,
+            selectors=["input[name='state']", "input[name*='state']", "input[autocomplete='address-level1']"],
+            value=values["state"],
+        )
+        self._fill_text_field(
+            page,
+            selectors=["input[name*='country']", "input[id*='country']"],
+            value=values["country"],
+        )
+        self._fill_text_field(
+            page,
+            selectors=["input[name*='linkedin']", "input[id*='linkedin']"],
+            value=values["linkedin"],
+        )
+        self._fill_text_field(
+            page,
+            selectors=["input[name*='github']", "input[id*='github']"],
+            value=values["github"],
+        )
+        self._fill_text_field(
+            page,
+            selectors=["input[name*='portfolio']", "input[id*='portfolio']", "input[name*='website']"],
+            value=values["portfolio"],
+        )
+        self._fill_text_field(
+            page,
+            selectors=["input[name*='work_authorization']", "select[name*='work_authorization']"],
+            value=values["work_authorization"],
+        )
+        self._fill_boolean_field(
+            page,
+            selectors=["input[name*='sponsor']", "select[name*='sponsor']", "input[name*='requires_sponsorship']"],
+            value=bool(values["requires_sponsorship"]),
+        )
+        self._fill_boolean_field(
+            page,
+            selectors=["input[name*='relocate']", "select[name*='relocate']"],
+            value=bool(values["willing_to_relocate"]),
+        )
+        self._fill_text_field(
+            page,
+            selectors=["input[name*='experience']", "input[id*='experience']"],
+            value=values["years_experience"],
+        )
+        self._fill_text_field(
+            page,
+            selectors=["textarea[name*='cover']", "textarea[id*='cover']", "textarea[name*='letter']"],
+            value=values["cover_letter"],
+        )
+
+    def _fill_boolean_field(self, page: Any, *, selectors: list[str], value: bool) -> bool:
+        normalized = "yes" if value else "no"
+        return self._fill_text_field(page, selectors=selectors, value=normalized)
+
+    def _fill_text_field(self, page: Any, *, selectors: list[str], value: Any) -> bool:
+        text = str(value).strip() if value is not None else ""
+        if not text:
+            return False
+
+        for selector in selectors:
+            try:
+                locator = page.locator(selector)
+                count = locator.count()
+            except Exception:
+                continue
+            for index in range(min(count, 4)):
+                candidate = locator.nth(index)
+                try:
+                    if not candidate.is_visible(timeout=200):
+                        continue
+                    tag_name = str(candidate.evaluate("el => el.tagName.toLowerCase()"))
+                    if tag_name == "select":
+                        with suppress(Exception):
+                            candidate.select_option(label=text)
+                            return True
+                        with suppress(Exception):
+                            candidate.select_option(value=text)
+                            return True
+                        continue
+                    candidate.fill(text, timeout=self.action_timeout_ms)
+                    return True
+                except Exception:
+                    continue
+        return False
+
+    def _await_manual_submit(
+        self,
+        *,
+        page: Any,
+        attempt: ApplyAttemptRecord,
+    ) -> ApplyAttemptRecord:
+        submission_signals = {"network_submit": False}
+
+        def _handle_request(request_obj: Any) -> None:
+            method = str(getattr(request_obj, "method", "GET")).upper()
+            if method == "GET":
+                return
+            url = str(getattr(request_obj, "url", "")).lower()
+            payload = ""
+            with suppress(Exception):
+                payload = str(getattr(request_obj, "post_data", "") or "").lower()
+            haystack = f"{url} {payload}"
+            if any(token in haystack for token in {"submit", "application", "apply", "candidate"}):
+                submission_signals["network_submit"] = True
+
+        page.on("request", _handle_request)
+        deadline = time.monotonic() + float(self.submit_timeout_seconds)
         try:
-            from playwright.sync_api import sync_playwright
+            while time.monotonic() < deadline:
+                if (
+                    submission_signals["network_submit"]
+                    or self._is_submission_url(page.url)
+                    or self._has_confirmation_text(page)
+                ):
+                    return attempt.model_copy(
+                        update={
+                            "status": ApplyAttemptStatus.submitted,
+                            "submitted_at": utc_now(),
+                            "failure_code": None,
+                            "failure_reason": None,
+                        }
+                    )
+                time.sleep(self.poll_interval_seconds)
+        finally:
+            with suppress(Exception):
+                page.remove_listener("request", _handle_request)
 
-            with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=self.headless)
-                context = browser.new_context()
-                page = context.new_page()
-                page.set_default_navigation_timeout(self.nav_timeout_ms)
-                page.set_default_timeout(self.action_timeout_ms)
-                page.goto(attempt.job_url, wait_until="domcontentloaded")
-                if self.capture_screenshots:
-                    page.screenshot(path=f"/tmp/{attempt.attempt_id}.png", full_page=True)
-                context.close()
-                browser.close()
-        except Exception as exc:
-            logger.exception(
-                "playwright_apply_attempt_failed",
-                extra={"attempt_id": attempt.attempt_id, "job_url": attempt.job_url},
-            )
-            error_text = str(exc).lower()
-            failure_code = (
-                FailureCode.timeout if "timeout" in error_text else FailureCode.site_blocked
-            )
-            return attempt.model_copy(
-                update={
-                    "status": ApplyAttemptStatus.failed,
-                    "failure_code": failure_code,
-                    "failure_reason": str(exc),
-                }
-            )
+        return attempt.model_copy(
+            update={
+                "status": ApplyAttemptStatus.blocked,
+                "failure_code": FailureCode.manual_review_timeout,
+                "failure_reason": (
+                    f"Manual submit not detected within {self.submit_timeout_seconds} seconds"
+                ),
+                "submitted_at": None,
+            }
+        )
 
+    def _is_submission_url(self, url: str | None) -> bool:
+        lower_url = (url or "").lower()
+        return any(token in lower_url for token in self._SUBMIT_URL_TOKENS)
+
+    def _has_confirmation_text(self, page: Any) -> bool:
+        text = ""
+        with suppress(Exception):
+            text = str(
+                page.locator("body").inner_text(
+                    timeout=min(self.action_timeout_ms, 1500)
+                )
+            )
+        if not text:
+            return False
+        return bool(self._SUBMIT_TEXT_RE.search(text))
+
+    @staticmethod
+    def _standard_terminal_attempt(attempt: ApplyAttemptRecord) -> ApplyAttemptRecord:
+        return attempt.model_copy(
+            update={
+                "status": ApplyAttemptStatus.succeeded,
+                "submitted_at": utc_now(),
+                "failure_code": None,
+                "failure_reason": None,
+            }
+        )
+
+    def _build_artifacts(self, attempt_id: str) -> list[ArtifactRef]:
         expires = utc_now() + timedelta(days=7)
         artifacts = [
             ArtifactRef(
                 kind="html",
-                url=f"s3://job-artifacts/{attempt.attempt_id}/playwright-final.html",
+                url=f"s3://job-artifacts/{attempt_id}/playwright-final.html",
                 expires_at=expires,
             )
         ]
@@ -1085,20 +1468,11 @@ class PlaywrightApplyExecutor:
             artifacts.append(
                 ArtifactRef(
                     kind="screenshot",
-                    url=f"s3://job-artifacts/{attempt.attempt_id}/playwright-final.png",
+                    url=f"s3://job-artifacts/{attempt_id}/playwright-final.png",
                     expires_at=expires,
                 )
             )
-
-        return attempt.model_copy(
-            update={
-                "status": ApplyAttemptStatus.succeeded,
-                "submitted_at": utc_now(),
-                "failure_code": None,
-                "failure_reason": None,
-                "artifacts": artifacts,
-            }
-        )
+        return artifacts
 
 
 class ApplyService:
@@ -1109,17 +1483,25 @@ class ApplyService:
 
     @staticmethod
     def _autonomous_browsing_enabled() -> bool:
-        return os.getenv("ENABLE_AUTONOMOUS_BROWSING", "false").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
+        return _bool_env("ENABLE_AUTONOMOUS_BROWSING", False)
 
     def _build_executor(self) -> ApplyExecutor:
-        if self._autonomous_browsing_enabled():
+        flags = ApplyExecutionFlags()
+        if flags.dev_review_requested and not flags.dev_review_env_allowed:
+            logger.info(
+                "apply_dev_review_mode_ignored_for_non_dev_environment",
+                extra={"app_env": flags.app_env},
+            )
+
+        if flags.autonomous_browsing_enabled:
             try:
-                return PlaywrightApplyExecutor(synthesizer=self.answer_synthesizer)
+                return PlaywrightApplyExecutor(
+                    synthesizer=self.answer_synthesizer,
+                    dev_review_mode=flags.dev_review_enabled,
+                    submit_timeout_seconds=flags.submit_timeout_seconds,
+                    poll_interval_ms=flags.poll_interval_ms,
+                    slow_mo_ms=flags.slow_mo_ms,
+                )
             except Exception:
                 logger.exception("playwright_executor_init_failed")
         return SimulatedApplyExecutor()
