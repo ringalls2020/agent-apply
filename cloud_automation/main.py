@@ -47,6 +47,11 @@ def create_app(database_url: str | None = None) -> FastAPI:
     engine = create_db_engine(get_database_url(database_url))
     session_factory = create_session_factory(engine)
     configured_adapters = build_configured_adapters()
+    ttl_raw = os.getenv("JOB_LISTING_TTL_DAYS", "21")
+    try:
+        job_listing_ttl_days = max(int(ttl_raw), 1)
+    except ValueError:
+        job_listing_ttl_days = 21
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -65,7 +70,11 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     app = FastAPI(title="Job Intel API", version="0.1.0", lifespan=lifespan)
     app.state.engine = engine
-    app.state.store = JobIntelStore(session_factory)
+    app.state.job_listing_ttl_days = job_listing_ttl_days
+    app.state.store = JobIntelStore(
+        session_factory,
+        job_listing_ttl_days=job_listing_ttl_days,
+    )
     app.state.discovery = DiscoveryCoordinator(
         store=app.state.store,
         adapters=configured_adapters,
@@ -146,6 +155,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         q: str = "",
         location: str | None = None,
         limit: int = 25,
+        include_archived: bool = False,
     ) -> JobSearchResponse:
         authorize(request)
         keywords = [item.strip() for item in q.split(",") if item.strip()]
@@ -153,6 +163,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
             keywords=keywords,
             location=location,
             limit=min(max(limit, 1), 100),
+            include_archived=include_archived,
         )
         return JobSearchResponse(jobs=jobs)
 

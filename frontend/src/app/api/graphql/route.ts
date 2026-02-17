@@ -25,6 +25,7 @@ type BackendAuthResponse = {
 type BackendApplication = {
   id: string;
   status: string;
+  is_archived: boolean;
   opportunity: {
     title: string;
     company: string;
@@ -141,6 +142,7 @@ type GraphQLApplicationsFilterInput = {
   q?: string | null;
   companies?: string[] | null;
   sources?: string[] | null;
+  includeArchived?: boolean | null;
   hasContact?: boolean | null;
   discoveredFrom?: string | null;
   discoveredTo?: string | null;
@@ -188,6 +190,7 @@ function toGraphQLApplication(application: BackendApplication) {
     title: application.opportunity.title,
     company: application.opportunity.company,
     status: application.status,
+    isArchived: application.is_archived,
     source: deriveApplicationSource(application.opportunity.url),
     contactName: application.contact?.name ?? "",
     contactEmail: application.contact?.email ?? "",
@@ -340,6 +343,9 @@ function buildApplicationsSearchPath(
   for (const source of filter?.sources ?? []) {
     if (source?.trim()) params.append("sources", source.trim());
   }
+  if (filter?.includeArchived) {
+    params.set("include_archived", "true");
+  }
   if (typeof filter?.hasContact === "boolean") {
     params.set("has_contact", String(filter.hasContact));
   }
@@ -363,10 +369,15 @@ const schema = createSchema({
         const user = await getAuthenticatedUser(requireToken(ctx.token));
         return toGraphQLUser(user);
       },
-      applications: async (_root, _args, ctx: GraphQLContext) => {
+      applications: async (
+        _root,
+        args: { includeArchived?: boolean },
+        ctx: GraphQLContext,
+      ) => {
         const token = requireToken(ctx.token);
+        const includeArchived = Boolean(args.includeArchived);
         const response = await requestBackend<BackendApplicationsResponse>(
-          "/v1/applications",
+          `/v1/applications?include_archived=${includeArchived ? "true" : "false"}`,
           { token },
         );
         return response.applications.map(toGraphQLApplication);

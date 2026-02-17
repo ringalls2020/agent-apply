@@ -1,18 +1,23 @@
 from collections.abc import Iterator
+from datetime import timedelta
 import os
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from backend.db_models import UserApplicationProfileRow
+from common.time import utc_now
+from backend.db_models import ApplicationRecordRow, UserApplicationProfileRow
 from backend.main import create_app
 from backend.models import (
+    ApplicationRecord,
+    ApplicationStatus,
     CloudApplyRunCreated,
     CloudMatchRunCreated,
     CloudMatchRunStatus,
     MatchRunStatus,
     MatchedJob,
+    Opportunity,
 )
 
 
@@ -69,6 +74,31 @@ class FakeCloudClient:
             run_id=run_id,
             status=MatchRunStatus.queued,
             status_url=f"/v1/apply-runs/{run_id}",
+        )
+
+
+class StableJobCloudClient(FakeCloudClient):
+    def start_match_run(self, payload) -> CloudMatchRunCreated:
+        del payload
+        run_id = f"stable-match-run-{self._next_run}"
+        self._next_run += 1
+        self._runs[run_id] = [
+            MatchedJob(
+                external_job_id="stable-job-1",
+                title="Stable Backend Engineer",
+                company="Stable Corp",
+                location="United States",
+                apply_url="https://jobs.live-board.test/stable-1",
+                source="greenhouse",
+                reason="Stable cloud fixture for anchor tests",
+                score=0.95,
+                posted_at=None,
+            )
+        ]
+        return CloudMatchRunCreated(
+            run_id=run_id,
+            status=MatchRunStatus.queued,
+            status_url=f"/v1/match-runs/{run_id}",
         )
 
 
@@ -131,6 +161,30 @@ def _seed_profile(
 
     assert pref_response.status_code == 200
     assert resume_response.status_code == 200
+
+
+def _seed_application_record(
+    client: TestClient,
+    *,
+    user_id: str,
+    app_id: str,
+    opportunity_id: str,
+    discovered_at_offset_days: int,
+    status: ApplicationStatus = ApplicationStatus.review,
+) -> ApplicationRecord:
+    record = ApplicationRecord(
+        id=app_id,
+        opportunity=Opportunity(
+            id=opportunity_id,
+            title="Platform Engineer",
+            company="Acme",
+            url=f"https://example.com/jobs/{opportunity_id}",
+            reason="seeded for tests",
+            discovered_at=utc_now() - timedelta(days=discovered_at_offset_days),
+        ),
+        status=status,
+    )
+    return client.app.state.store.upsert_for_user(user_id, record)
 
 
 def test_health_endpoint_returns_ok(test_client: TestClient) -> None:
@@ -416,6 +470,47 @@ def test_agent_run_with_autosubmit_starts_apply_run(test_client: TestClient) -> 
     assert fake_cloud.apply_run_starts == 1
 
 
+def test_agent_run_preserves_first_seen_anchor_when_match_posted_at_missing() -> None:
+    os.environ.setdefault("USER_PROFILE_ENCRYPTION_KEY", "test-profile-encryption-key")
+    stable_cloud = StableJobCloudClient()
+    app = create_app(
+        database_url="sqlite+pysqlite:///:memory:",
+        cloud_client=stable_cloud,
+    )
+    with TestClient(app) as client:
+        user = _signup_user(client, full_name="Jane Anchor", email="anchor@example.com")
+        user_id = user["user"]["id"]
+        token = user["token"]
+        _seed_profile(client, user_id=user_id, token=token, applications_per_day=2)
+
+        first_run = client.post("/v1/agent/run", headers=_auth_headers(token))
+        assert first_run.status_code == 200
+        application_id = first_run.json()["applications"][0]["id"]
+
+        with app.state.main_store._session_factory() as session:
+            row = session.get(ApplicationRecordRow, application_id)
+            assert row is not None
+            row.opportunity_discovered_at = utc_now() - timedelta(days=40)
+            session.commit()
+
+        second_run = client.post("/v1/agent/run", headers=_auth_headers(token))
+        assert second_run.status_code == 200
+        second_app = second_run.json()["applications"][0]
+        assert second_app["is_archived"] is True
+
+        default_list = client.get("/v1/applications", headers=_auth_headers(token))
+        assert default_list.status_code == 200
+        assert default_list.json()["applications"] == []
+
+        archived_list = client.get(
+            "/v1/applications?include_archived=true",
+            headers=_auth_headers(token),
+        )
+        assert archived_list.status_code == 200
+        assert len(archived_list.json()["applications"]) == 1
+        assert archived_list.json()["applications"][0]["is_archived"] is True
+
+
 def test_mark_viewed_transitions_review_and_is_idempotent(test_client: TestClient) -> None:
     user = _signup_user(test_client, full_name="Jane Viewed", email="viewed@example.com")
     _seed_profile(test_client, user_id=user["user"]["id"], token=user["token"], applications_per_day=2)
@@ -483,6 +578,126 @@ def test_bulk_apply_accepts_review_and_viewed_statuses(test_client: TestClient) 
     )
     assert mark_viewed_after_applying.status_code == 200
     assert mark_viewed_after_applying.json()["status"] == "applying"
+
+
+def test_applications_hide_archived_by_default_and_include_with_toggle(
+    test_client: TestClient,
+) -> None:
+    user = _signup_user(test_client, full_name="Jane Archive", email="archive@example.com")
+    user_id = user["user"]["id"]
+    token = user["token"]
+
+    fresh = _seed_application_record(
+        test_client,
+        user_id=user_id,
+        app_id="fresh-app",
+        opportunity_id="job-fresh",
+        discovered_at_offset_days=2,
+    )
+    archived = _seed_application_record(
+        test_client,
+        user_id=user_id,
+        app_id="archived-app",
+        opportunity_id="job-archived",
+        discovered_at_offset_days=30,
+    )
+
+    hidden_default = test_client.get("/v1/applications", headers=_auth_headers(token))
+    assert hidden_default.status_code == 200
+    hidden_apps = hidden_default.json()["applications"]
+    assert [item["id"] for item in hidden_apps] == [fresh.id]
+    assert hidden_apps[0]["is_archived"] is False
+
+    listed_with_archive = test_client.get(
+        "/v1/applications?include_archived=true",
+        headers=_auth_headers(token),
+    )
+    assert listed_with_archive.status_code == 200
+    listed_ids = {item["id"] for item in listed_with_archive.json()["applications"]}
+    assert listed_ids == {fresh.id, archived.id}
+    archived_payload = next(
+        item for item in listed_with_archive.json()["applications"] if item["id"] == archived.id
+    )
+    assert archived_payload["is_archived"] is True
+
+    search_default = test_client.get("/v1/applications/search", headers=_auth_headers(token))
+    assert search_default.status_code == 200
+    assert [item["id"] for item in search_default.json()["applications"]] == [fresh.id]
+
+    search_with_archive = test_client.get(
+        "/v1/applications/search?include_archived=true",
+        headers=_auth_headers(token),
+    )
+    assert search_with_archive.status_code == 200
+    search_ids = {item["id"] for item in search_with_archive.json()["applications"]}
+    assert search_ids == {fresh.id, archived.id}
+
+
+def test_bulk_apply_skips_archived_applications(test_client: TestClient) -> None:
+    user = _signup_user(test_client, full_name="Jane Archived Apply", email="archived-apply@example.com")
+    user_id = user["user"]["id"]
+    token = user["token"]
+    _seed_profile(test_client, user_id=user_id, token=token, applications_per_day=5)
+
+    fresh = _seed_application_record(
+        test_client,
+        user_id=user_id,
+        app_id="fresh-bulk-app",
+        opportunity_id="job-fresh-bulk",
+        discovered_at_offset_days=1,
+    )
+    archived = _seed_application_record(
+        test_client,
+        user_id=user_id,
+        app_id="archived-bulk-app",
+        opportunity_id="job-archived-bulk",
+        discovered_at_offset_days=40,
+    )
+
+    apply_response = test_client.post(
+        "/v1/applications/apply",
+        headers=_auth_headers(token),
+        json={"application_ids": [archived.id, fresh.id]},
+    )
+    assert apply_response.status_code == 200
+    body = apply_response.json()
+    assert body["accepted_application_ids"] == [fresh.id]
+    assert body["run_id"]
+    assert body["skipped"] == [
+        {
+            "application_id": archived.id,
+            "reason": "archived",
+            "status": "review",
+        }
+    ]
+
+
+def test_mark_actions_reject_archived_application(test_client: TestClient) -> None:
+    user = _signup_user(test_client, full_name="Jane Archived Mark", email="archived-mark@example.com")
+    user_id = user["user"]["id"]
+    token = user["token"]
+
+    archived = _seed_application_record(
+        test_client,
+        user_id=user_id,
+        app_id="archived-mark-app",
+        opportunity_id="job-archived-mark",
+        discovered_at_offset_days=50,
+    )
+
+    mark_viewed = test_client.post(
+        f"/v1/applications/{archived.id}/mark-viewed",
+        headers=_auth_headers(token),
+    )
+    assert mark_viewed.status_code == 400
+    assert mark_viewed.json()["detail"] == "Application is archived and cannot be updated"
+
+    mark_applied = test_client.post(
+        f"/v1/applications/{archived.id}/mark-applied",
+        headers=_auth_headers(token),
+    )
+    assert mark_applied.status_code == 400
+    assert mark_applied.json()["detail"] == "Application is archived and cannot be updated"
 
 
 def test_mark_viewed_is_user_scoped(test_client: TestClient) -> None:

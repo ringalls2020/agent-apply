@@ -66,8 +66,14 @@ logger = logging.getLogger(__name__)
 
 
 class PostgresStore:
-    def __init__(self, session_factory: Callable[[], Session]) -> None:
+    def __init__(
+        self,
+        session_factory: Callable[[], Session],
+        *,
+        job_listing_ttl_days: int = 21,
+    ) -> None:
         self._session_factory = session_factory
+        self._job_listing_ttl_days = max(int(job_listing_ttl_days), 1)
         logger.debug("postgres_store_initialized")
 
     def upsert_for_user(
@@ -100,15 +106,26 @@ class PostgresStore:
         )
         return stored
 
-    def list_for_user(self, user_id: str) -> List[ApplicationRecord]:
+    def _archive_cutoff(self) -> datetime:
+        return utc_now() - timedelta(days=self._job_listing_ttl_days)
+
+    def _is_archived_at(self, discovered_at: datetime) -> bool:
+        return discovered_at < self._archive_cutoff()
+
+    def list_for_user(self, user_id: str, *, include_archived: bool = False) -> List[ApplicationRecord]:
         logger.debug("store_list_for_user_started", extra={"user_id": user_id})
         try:
             with self._session_factory() as session:
-                rows = session.scalars(
+                stmt = (
                     select(ApplicationRecordRow)
                     .where(ApplicationRecordRow.user_id == user_id)
                     .order_by(ApplicationRecordRow.opportunity_discovered_at.desc())
-                ).all()
+                )
+                if not include_archived:
+                    stmt = stmt.where(
+                        ApplicationRecordRow.opportunity_discovered_at >= self._archive_cutoff()
+                    )
+                rows = session.scalars(stmt).all()
                 records = [self._to_record(row) for row in rows]
         except Exception:
             logger.exception("store_list_for_user_failed", extra={"user_id": user_id})
@@ -160,11 +177,14 @@ class PostgresStore:
         sort_dir: str = "desc",
         limit: int = 25,
         offset: int = 0,
+        include_archived: bool = False,
     ) -> tuple[list[ApplicationRecord], int]:
         normalized_limit = min(max(limit, 1), 100)
         normalized_offset = max(offset, 0)
 
         filters = [ApplicationRecordRow.user_id == user_id]
+        if not include_archived:
+            filters.append(ApplicationRecordRow.opportunity_discovered_at >= self._archive_cutoff())
         if statuses:
             filters.append(ApplicationRecordRow.status.in_([status.value for status in statuses]))
 
@@ -251,25 +271,56 @@ class PostgresStore:
             return [self._to_record(row) for row in rows], total_count
 
     def get_for_user_by_ids(
-        self, *, user_id: str, application_ids: list[str]
+        self,
+        *,
+        user_id: str,
+        application_ids: list[str],
+        include_archived: bool = False,
     ) -> list[ApplicationRecord]:
         if not application_ids:
             return []
         with self._session_factory() as session:
-            rows = session.scalars(
-                select(ApplicationRecordRow).where(
-                    and_(
-                        ApplicationRecordRow.user_id == user_id,
-                        ApplicationRecordRow.id.in_(application_ids),
-                    )
+            stmt = select(ApplicationRecordRow).where(
+                and_(
+                    ApplicationRecordRow.user_id == user_id,
+                    ApplicationRecordRow.id.in_(application_ids),
                 )
-            ).all()
+            )
+            if not include_archived:
+                stmt = stmt.where(
+                    ApplicationRecordRow.opportunity_discovered_at >= self._archive_cutoff()
+                )
+            rows = session.scalars(stmt).all()
             row_by_id = {row.id: row for row in rows}
             return [
                 self._to_record(row_by_id[application_id])
                 for application_id in application_ids
                 if application_id in row_by_id
             ]
+
+    def get_for_user_by_opportunity_ids(
+        self,
+        *,
+        user_id: str,
+        opportunity_ids: list[str],
+        include_archived: bool = False,
+    ) -> list[ApplicationRecord]:
+        if not opportunity_ids:
+            return []
+
+        with self._session_factory() as session:
+            stmt = select(ApplicationRecordRow).where(
+                and_(
+                    ApplicationRecordRow.user_id == user_id,
+                    ApplicationRecordRow.opportunity_id.in_(opportunity_ids),
+                )
+            )
+            if not include_archived:
+                stmt = stmt.where(
+                    ApplicationRecordRow.opportunity_discovered_at >= self._archive_cutoff()
+                )
+            rows = session.scalars(stmt).all()
+            return [self._to_record(row) for row in rows]
 
     def mark_viewed_for_user_application(
         self, *, user_id: str, application_id: str
@@ -443,8 +494,7 @@ class PostgresStore:
         row.contact_role = record.contact.role
         row.contact_source = record.contact.source
 
-    @staticmethod
-    def _to_record(row: ApplicationRecordRow) -> ApplicationRecord:
+    def _to_record(self, row: ApplicationRecordRow) -> ApplicationRecord:
         contact = None
 
         if (
@@ -470,6 +520,7 @@ class PostgresStore:
                 discovered_at=row.opportunity_discovered_at,
             ),
             status=ApplicationStatus(row.status),
+            is_archived=self._is_archived_at(row.opportunity_discovered_at),
             contact=contact,
             submitted_at=row.submitted_at,
             notified_at=row.notified_at,

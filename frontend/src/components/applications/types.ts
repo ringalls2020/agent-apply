@@ -3,6 +3,7 @@ export type Application = {
   title: string;
   company: string;
   status: string;
+  isArchived: boolean;
   source: string;
   contactName: string | null;
   contactEmail: string | null;
@@ -15,6 +16,7 @@ export type ApplicationFilterInput = {
   q?: string;
   companies?: string[];
   sources?: string[];
+  includeArchived?: boolean;
   hasContact?: boolean;
   discoveredFrom?: string;
   discoveredTo?: string;
@@ -27,6 +29,7 @@ export type FilterState = {
   q: string;
   companiesText: string;
   sources: string[];
+  includeArchived: boolean;
   hasContact: "all" | "yes" | "no";
   discoveredFrom: string;
   discoveredTo: string;
@@ -48,6 +51,7 @@ export function defaultFilters(): FilterState {
     q: "",
     companiesText: "",
     sources: [],
+    includeArchived: false,
     hasContact: "all",
     discoveredFrom: "",
     discoveredTo: "",

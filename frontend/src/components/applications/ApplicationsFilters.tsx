@@ -15,6 +15,7 @@ type ApplicationsFiltersProps = {
   onHasContactChange: (value: FilterState["hasContact"]) => void;
   onSortByChange: (value: FilterState["sortBy"]) => void;
   onSortDirChange: (value: FilterState["sortDir"]) => void;
+  onIncludeArchivedChange: (value: boolean) => void;
   onDiscoveredFromChange: (value: string) => void;
   onDiscoveredToChange: (value: string) => void;
   onToggleStatus: (status: string) => void;
@@ -32,6 +33,7 @@ export function ApplicationsFilters({
   onHasContactChange,
   onSortByChange,
   onSortDirChange,
+  onIncludeArchivedChange,
   onDiscoveredFromChange,
   onDiscoveredToChange,
   onToggleStatus,
@@ -143,6 +145,19 @@ export function ApplicationsFilters({
           value={filters.discoveredTo}
           onChange={(event) => onDiscoveredToChange(event.target.value)}
         />
+
+        <div className="space-y-2">
+          <p className="block text-sm font-medium text-foreground text-wrap-anywhere">Archived</p>
+          <label className="inline-flex min-h-11 items-center gap-2 text-sm text-foreground">
+            <input
+              type="checkbox"
+              checked={filters.includeArchived}
+              onChange={(event) => onIncludeArchivedChange(event.target.checked)}
+              className="size-4 rounded border-border bg-surfaceAlt/70 text-accent focus-visible:ring-2 focus-visible:ring-accent/45"
+            />
+            Show archived
+          </label>
+        </div>
 
         <div className="space-y-2 sm:col-span-2">
           <p className="block text-sm font-medium text-foreground text-wrap-anywhere">Status</p>

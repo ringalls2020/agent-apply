@@ -90,3 +90,31 @@ def test_search_for_user_filters_by_status_and_company(store: PostgresStore) -> 
     assert total == 1
     assert len(apps) == 1
     assert apps[0].id == "app-2"
+
+
+def test_archived_records_hidden_by_default_and_included_on_toggle(store: PostgresStore) -> None:
+    fresh = _build_record(app_id="fresh-app", opportunity_id="job-fresh", discovered_at_offset_days=3)
+    archived = _build_record(app_id="old-app", opportunity_id="job-old", discovered_at_offset_days=30)
+
+    store.upsert_for_user("user-1", fresh)
+    store.upsert_for_user("user-1", archived)
+
+    visible = store.list_for_user("user-1")
+    assert [item.id for item in visible] == ["fresh-app"]
+    assert visible[0].is_archived is False
+
+    with_archived = store.list_for_user("user-1", include_archived=True)
+    assert {item.id for item in with_archived} == {"fresh-app", "old-app"}
+    archived_item = next(item for item in with_archived if item.id == "old-app")
+    assert archived_item.is_archived is True
+
+    default_search, default_total = store.search_for_user(user_id="user-1")
+    assert default_total == 1
+    assert [item.id for item in default_search] == ["fresh-app"]
+
+    archive_search, archive_total = store.search_for_user(
+        user_id="user-1",
+        include_archived=True,
+    )
+    assert archive_total == 2
+    assert {item.id for item in archive_search} == {"fresh-app", "old-app"}

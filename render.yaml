@@ -41,6 +41,8 @@ services:
         value: job-intel-api
       - key: DEFAULT_APPLY_DAILY_CAP
         value: "25"
+      - key: JOB_LISTING_TTL_DAYS
+        value: "21"
 
   - type: web
     name: job-intel-api
@@ -75,6 +77,8 @@ services:
         sync: false
       - key: CLOUD_CALLBACK_SIGNATURE_SECRET
         sync: false
+      - key: JOB_LISTING_TTL_DAYS
+        value: "21"
 
   - type: worker
     name: discovery-worker
@@ -91,6 +95,8 @@ services:
           property: connectionString
       - key: DISCOVERY_INTERVAL_SECONDS
         value: "21600"
+      - key: JOB_LISTING_TTL_DAYS
+        value: "21"
 
   - type: worker
     name: apply-worker
@@ -115,6 +121,8 @@ services:
         sync: false
       - key: CLOUD_CALLBACK_SIGNATURE_SECRET
         sync: false
+      - key: JOB_LISTING_TTL_DAYS
+        value: "21"
 
   - type: worker
     name: match-worker
@@ -129,6 +137,8 @@ services:
         fromDatabase:
           name: jobs-postgres
           property: connectionString
+      - key: JOB_LISTING_TTL_DAYS
+        value: "21"
 
   - type: worker
     name: maintenance-worker
@@ -143,3 +153,5 @@ services:
         fromDatabase:
           name: jobs-postgres
           property: connectionString
+      - key: JOB_LISTING_TTL_DAYS
+        value: "21"

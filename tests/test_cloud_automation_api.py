@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 
 from fastapi.testclient import TestClient
 
+from common.time import utc_now
+from cloud_automation.db_models import NormalizedJobRow
 from cloud_automation.main import create_app
 from cloud_automation.security import create_hs256_jwt
 
@@ -126,3 +129,70 @@ def test_run_claim_is_single_consumer() -> None:
         apply_run_id = apply_start.json()["run_id"]
         assert app.state.store.claim_apply_run(apply_run_id) is True
         assert app.state.store.claim_apply_run(apply_run_id) is False
+
+
+def test_search_hides_archived_jobs_by_default_and_includes_with_toggle() -> None:
+    app = create_app(database_url="sqlite+pysqlite:///:memory:")
+    with TestClient(app) as client:
+        with app.state.store._session_factory() as session:
+            session.add(
+                NormalizedJobRow(
+                    id="fresh-no-posted",
+                    title="Fresh Engineer",
+                    company="Acme",
+                    location="United States",
+                    salary=None,
+                    apply_url="https://example.com/fresh",
+                    source="greenhouse",
+                    posted_at=None,
+                    description="fresh engineer listing",
+                    created_at=utc_now(),
+                )
+            )
+            session.add(
+                NormalizedJobRow(
+                    id="old-with-posted",
+                    title="Old Engineer With Posted",
+                    company="Acme",
+                    location="United States",
+                    salary=None,
+                    apply_url="https://example.com/old-posted",
+                    source="lever",
+                    posted_at=utc_now() - timedelta(days=30),
+                    description="old posted engineer listing",
+                    created_at=utc_now(),
+                )
+            )
+            session.add(
+                NormalizedJobRow(
+                    id="old-no-posted",
+                    title="Old Engineer No Posted",
+                    company="Acme",
+                    location="United States",
+                    salary=None,
+                    apply_url="https://example.com/old-created",
+                    source="smartrecruiters",
+                    posted_at=None,
+                    description="old created engineer listing",
+                    created_at=utc_now() - timedelta(days=45),
+                )
+            )
+            session.commit()
+
+        default_search = client.get(
+            "/v1/jobs/search?q=engineer&limit=50",
+            headers=_auth_headers(),
+        )
+        assert default_search.status_code == 200
+        default_ids = {item["id"] for item in default_search.json()["jobs"]}
+        assert "fresh-no-posted" in default_ids
+        assert "old-with-posted" not in default_ids
+        assert "old-no-posted" not in default_ids
+
+        with_archive = client.get(
+            "/v1/jobs/search?q=engineer&limit=50&include_archived=true",
+            headers=_auth_headers(),
+        )
+        assert with_archive.status_code == 200
+        archive_ids = {item["id"] for item in with_archive.json()["jobs"]}
+        assert {"fresh-no-posted", "old-with-posted", "old-no-posted"}.issubset(archive_ids)

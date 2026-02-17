@@ -57,8 +57,25 @@ def _json_loads(value: str, default: Any) -> Any:
 
 
 class JobIntelStore:
-    def __init__(self, session_factory: Callable[[], Session]) -> None:
+    def __init__(
+        self,
+        session_factory: Callable[[], Session],
+        *,
+        job_listing_ttl_days: int | None = None,
+    ) -> None:
         self._session_factory = session_factory
+        if job_listing_ttl_days is None:
+            raw_value = os.getenv("JOB_LISTING_TTL_DAYS", "21")
+            try:
+                parsed = int(raw_value)
+            except ValueError:
+                parsed = 21
+            self._job_listing_ttl_days = max(parsed, 1)
+        else:
+            self._job_listing_ttl_days = max(int(job_listing_ttl_days), 1)
+
+    def _archive_cutoff(self):
+        return utc_now() - timedelta(days=self._job_listing_ttl_days)
 
     def record_discovery_documents(
         self,
@@ -165,13 +182,23 @@ class JobIntelStore:
             session.commit()
 
     def search_jobs(
-        self, *, keywords: list[str], location: str | None = None, limit: int = 50
+        self,
+        *,
+        keywords: list[str],
+        location: str | None = None,
+        limit: int = 50,
+        include_archived: bool = False,
     ) -> list[NormalizedJob]:
         normalized_limit = min(max(limit, 1), 100)
         normalized_keywords = [item.strip().lower() for item in keywords if item.strip()]
         normalized_location = location.strip().lower() if isinstance(location, str) and location.strip() else None
 
         filters = []
+        if not include_archived:
+            filters.append(
+                func.coalesce(NormalizedJobRow.posted_at, NormalizedJobRow.created_at)
+                >= self._archive_cutoff()
+            )
         if normalized_location:
             location_pattern = f"%{normalized_location}%"
             filters.append(

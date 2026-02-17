@@ -132,9 +132,16 @@ def create_app(
 
     fastapi_app = FastAPI(title="Agent Apply", version="0.2.0", lifespan=lifespan)
     fastapi_app.state.engine = engine
+    fastapi_app.state.job_listing_ttl_days = max(
+        1,
+        _parse_int_env("JOB_LISTING_TTL_DAYS", 21),
+    )
 
     # Legacy application records store (used for /v1/applications).
-    fastapi_app.state.store = PostgresStore(session_factory=session_factory)
+    fastapi_app.state.store = PostgresStore(
+        session_factory=session_factory,
+        job_listing_ttl_days=fastapi_app.state.job_listing_ttl_days,
+    )
 
     # New main-platform stack.
     fastapi_app.state.main_store = MainPlatformStore(session_factory=session_factory)
@@ -397,8 +404,25 @@ def create_app(
             )
 
         now = utc_now()
+        existing_by_opportunity_id = {
+            record.opportunity.id: record
+            for record in fastapi_app.state.store.get_for_user_by_opportunity_ids(
+                user_id=user_id,
+                opportunity_ids=[match.external_job_id for match in latest_status.results],
+                include_archived=True,
+            )
+        }
         applications: list[ApplicationRecord] = []
         for match in latest_status.results:
+            existing_record = existing_by_opportunity_id.get(match.external_job_id)
+            discovered_anchor = (
+                match.posted_at
+                or (
+                    existing_record.opportunity.discovered_at
+                    if existing_record is not None
+                    else now
+                )
+            )
             record = ApplicationRecord(
                 id=str(uuid5(NAMESPACE_URL, f"{user_id}:{match.external_job_id}")),
                 opportunity=Opportunity(
@@ -407,7 +431,7 @@ def create_app(
                     company=match.company,
                     url=match.apply_url,
                     reason=f"{match.reason} (source={match.source}, score={match.score:.2f})",
-                    discovered_at=match.posted_at or now,
+                    discovered_at=discovered_anchor,
                 ),
                 status=(
                     ApplicationStatus.applying
@@ -415,14 +439,14 @@ def create_app(
                     else ApplicationStatus.review
                 ),
             )
-            applications.append(
-                fastapi_app.state.store.upsert_for_user(user_id, record)
-            )
+            stored = fastapi_app.state.store.upsert_for_user(user_id, record)
+            applications.append(stored)
+            existing_by_opportunity_id[match.external_job_id] = stored
 
         jobs_to_apply = [
             item
             for item in applications
-            if item.status == ApplicationStatus.applying
+            if item.status == ApplicationStatus.applying and not item.is_archived
         ]
 
         if autosubmit_enabled and jobs_to_apply:
@@ -458,7 +482,10 @@ def create_app(
         return AgentRunResponse(applications=applications)
 
     @fastapi_app.get("/v1/applications", response_model=AgentRunResponse)
-    def list_user_applications(request: Request) -> AgentRunResponse:
+    def list_user_applications(
+        request: Request,
+        include_archived: bool = False,
+    ) -> AgentRunResponse:
         user_id = authenticated_user_id_from_request(request)
         user = fastapi_app.state.main_store.get_user(user_id)
         if user is None:
@@ -466,7 +493,10 @@ def create_app(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User not found for token subject",
             )
-        applications = fastapi_app.state.store.list_for_user(user_id)
+        applications = fastapi_app.state.store.list_for_user(
+            user_id,
+            include_archived=include_archived,
+        )
         return AgentRunResponse(applications=applications)
 
     @fastapi_app.get("/v1/applications/search", response_model=ApplicationsSearchResponse)
@@ -483,6 +513,7 @@ def create_app(
         sort_dir: str = "desc",
         limit: int = 25,
         offset: int = 0,
+        include_archived: bool = False,
     ) -> ApplicationsSearchResponse:
         user_id = authenticated_user_id_from_request(request)
 
@@ -536,6 +567,7 @@ def create_app(
             sort_dir=normalized_sort_dir,
             limit=limit,
             offset=offset,
+            include_archived=include_archived,
         )
         return ApplicationsSearchResponse(
             applications=applications,
@@ -573,6 +605,7 @@ def create_app(
         existing = fastapi_app.state.store.get_for_user_by_ids(
             user_id=user_id,
             application_ids=normalized_ids,
+            include_archived=True,
         )
         existing_by_id = {application.id: application for application in existing}
 
@@ -588,6 +621,16 @@ def create_app(
                     BulkApplySkippedItem(
                         application_id=application_id,
                         reason="application_not_found",
+                    )
+                )
+                continue
+
+            if application.is_archived:
+                skipped.append(
+                    BulkApplySkippedItem(
+                        application_id=application_id,
+                        reason="archived",
+                        status=application.status,
                     )
                 )
                 continue
@@ -651,6 +694,21 @@ def create_app(
     )
     def mark_application_viewed(application_id: str, request: Request) -> ApplicationRecord:
         user_id = authenticated_user_id_from_request(request)
+        existing = fastapi_app.state.store.get_for_user_by_ids(
+            user_id=user_id,
+            application_ids=[application_id],
+            include_archived=True,
+        )
+        if not existing:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Application not found",
+            )
+        if existing[0].is_archived:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Application is archived and cannot be updated",
+            )
         application = fastapi_app.state.store.mark_viewed_for_user_application(
             user_id=user_id,
             application_id=application_id,
@@ -668,6 +726,21 @@ def create_app(
     )
     def mark_application_applied(application_id: str, request: Request) -> ApplicationRecord:
         user_id = authenticated_user_id_from_request(request)
+        existing = fastapi_app.state.store.get_for_user_by_ids(
+            user_id=user_id,
+            application_ids=[application_id],
+            include_archived=True,
+        )
+        if not existing:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Application not found",
+            )
+        if existing[0].is_archived:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Application is archived and cannot be updated",
+            )
         application = fastapi_app.state.store.mark_applied_for_user_application(
             user_id=user_id,
             application_id=application_id,

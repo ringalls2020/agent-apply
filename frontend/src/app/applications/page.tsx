@@ -19,6 +19,7 @@ import {
 } from "@/components/applications/types";
 import { AppShell } from "@/components/layout/AppShell";
 import { Nav } from "@/components/Nav";
+import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/Card";
 import { DataTable, type DataTableColumn } from "@/components/ui/DataTable";
@@ -106,6 +107,7 @@ function ApplicationsInner() {
     if (filters.q.trim()) input.q = filters.q.trim();
     if (companies.length) input.companies = companies;
     if (filters.sources.length) input.sources = filters.sources;
+    if (filters.includeArchived) input.includeArchived = true;
     if (filters.hasContact === "yes") input.hasContact = true;
     if (filters.hasContact === "no") input.hasContact = false;
     if (filters.discoveredFrom) input.discoveredFrom = filters.discoveredFrom;
@@ -199,7 +201,7 @@ function ApplicationsInner() {
   const selectAllEligibleOnPage = () => {
     setSelectionError("");
     const eligibleIds = apps
-      .filter((app) => isSelectableStatus(getEffectiveStatus(app)))
+      .filter((app) => !app.isArchived && isSelectableStatus(getEffectiveStatus(app)))
       .map((app) => app.id);
 
     const allSelected = eligibleIds.every((id) => selectedIds.includes(id));
@@ -295,6 +297,7 @@ function ApplicationsInner() {
   };
 
   const handleRoleClick = (app: Application) => {
+    if (app.isArchived) return;
     const currentStatus = normalizeStatus(getEffectiveStatus(app));
     if (currentStatus !== "review") return;
 
@@ -320,7 +323,7 @@ function ApplicationsInner() {
       mobileLabel: "Select",
       render: (app) => {
         const status = getEffectiveStatus(app);
-        const selectable = isSelectableStatus(status);
+        const selectable = !app.isArchived && isSelectableStatus(status);
         const checked = selectedIds.includes(app.id);
         return (
           <input
@@ -362,11 +365,16 @@ function ApplicationsInner() {
       header: "Source",
       render: (app) => <span className="text-muted capitalize">{app.source}</span>,
     },
-    {
-      id: "status",
-      header: "Status",
-      render: (app) => <StatusPill status={getEffectiveStatus(app)} />,
-    },
+      {
+        id: "status",
+        header: "Status",
+        render: (app) => (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <StatusPill status={getEffectiveStatus(app)} />
+            {app.isArchived && <Badge variant="default">Archived</Badge>}
+          </div>
+        ),
+      },
     {
       id: "contact",
       header: "Point of contact",
@@ -395,7 +403,7 @@ function ApplicationsInner() {
       mobileLabel: "Actions",
       render: (app) => {
         const status = normalizeStatus(getEffectiveStatus(app));
-        const canMarkApplied = status === "review" || status === "viewed";
+        const canMarkApplied = !app.isArchived && (status === "review" || status === "viewed");
         if (!canMarkApplied) {
           return <span className="text-xs text-muted">-</span>;
         }
@@ -469,6 +477,7 @@ function ApplicationsInner() {
         onHasContactChange={(value) => updateFilters({ hasContact: value })}
         onSortByChange={(value) => updateFilters({ sortBy: value })}
         onSortDirChange={(value) => updateFilters({ sortDir: value })}
+        onIncludeArchivedChange={(value) => updateFilters({ includeArchived: value })}
         onDiscoveredFromChange={(value) => updateFilters({ discoveredFrom: value })}
         onDiscoveredToChange={(value) => updateFilters({ discoveredTo: value })}
         onToggleStatus={toggleStatusFilter}
@@ -529,8 +538,8 @@ function ApplicationsInner() {
                   app={app}
                   effectiveStatus={effectiveStatus}
                   selected={selectedIds.includes(app.id)}
-                  selectable={isSelectableStatus(effectiveStatus)}
-                  canMarkApplied={normalizedStatus === "review" || normalizedStatus === "viewed"}
+                  selectable={!app.isArchived && isSelectableStatus(effectiveStatus)}
+                  canMarkApplied={!app.isArchived && (normalizedStatus === "review" || normalizedStatus === "viewed")}
                   rowActionLoading={Boolean(rowActionLoading[app.id])}
                   onToggleSelection={(checked) => toggleSelection(app.id, checked)}
                   onRoleClick={() => handleRoleClick(app)}

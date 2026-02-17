@@ -112,6 +112,7 @@ Callback requirements:
 ### Limits
 
 - `DEFAULT_APPLY_DAILY_CAP` (default: `25`)
+- `JOB_LISTING_TTL_DAYS` (default: `21`; listings with anchor time older than this are archived/hidden by default)
 
 ### User auth
 

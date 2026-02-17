@@ -15,6 +15,7 @@ export const typeDefs = /* GraphQL */ `
     title: String!
     company: String!
     status: String!
+    isArchived: Boolean!
     source: String!
     contactName: String!
     contactEmail: String!
@@ -119,6 +120,7 @@ export const typeDefs = /* GraphQL */ `
     q: String
     companies: [String!]
     sources: [String!]
+    includeArchived: Boolean
     hasContact: Boolean
     discoveredFrom: String
     discoveredTo: String
@@ -128,7 +130,7 @@ export const typeDefs = /* GraphQL */ `
 
   type Query {
     me: User!
-    applications: [Application!]!
+    applications(includeArchived: Boolean = false): [Application!]!
     applicationsSearch(filter: ApplicationFilterInput, limit: Int = 25, offset: Int = 0): ApplicationsSearchResult!
     profile: ApplicationProfile!
   }

@@ -1,6 +1,7 @@
 import { type ReactNode, useState } from "react";
 
 import { type Application } from "@/components/applications/types";
+import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { StatusPill } from "@/components/ui/StatusPill";
 
@@ -44,7 +45,10 @@ export function ApplicationMobileCard({
     <article className="rounded-xl2 border border-border/80 bg-surfaceAlt/55 p-3.5">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 space-y-1">
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted">{app.company}</p>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted">{app.company}</p>
+            {app.isArchived && <Badge variant="default">Archived</Badge>}
+          </div>
           <a
             href={app.jobUrl}
             target="_blank"
@@ -59,7 +63,7 @@ export function ApplicationMobileCard({
           aria-label={`Select ${app.title}`}
           type="checkbox"
           checked={selected}
-          disabled={!selectable && !selected}
+          disabled={app.isArchived || (!selectable && !selected)}
           onChange={(event) => onToggleSelection(event.target.checked)}
           className="mt-0.5 size-4 rounded border-border bg-surfaceAlt/70 text-accent focus-visible:ring-2 focus-visible:ring-accent/45"
         />
@@ -71,6 +75,11 @@ export function ApplicationMobileCard({
           {expanded ? "Hide details" : "Show details"}
         </Button>
       </div>
+      {app.isArchived && (
+        <p className="mt-2 text-xs text-muted">
+          This listing is archived and cannot be applied to.
+        </p>
+      )}
 
       {expanded && (
         <div className="mt-3 space-y-2.5 border-t border-border/70 pt-3">

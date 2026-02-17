@@ -37,6 +37,10 @@ All `/v1/*` endpoints require service JWT auth.
 - `DISCOVERY_INTERVAL_SECONDS` (default: `21600`, 6h)
 - `ENABLE_EMBEDDED_DISCOVERY_LOOP` (default: `false`; enable only for single-process local development)
 
+### Job listing freshness
+
+- `JOB_LISTING_TTL_DAYS` (default: `21`; listings older than this window are archived and excluded unless `include_archived=true`)
+
 ### Live adapter seeds (optional)
 
 - `USE_ONLY_LIVE_ADAPTERS` (default: `false`; set to `true` to disable synthetic fallback sources)

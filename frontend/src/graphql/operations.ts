@@ -82,6 +82,7 @@ export const APPLICATIONS_SEARCH = gql`
         title
         company
         status
+        isArchived
         source
         contactName
         contactEmail

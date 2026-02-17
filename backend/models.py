@@ -37,6 +37,7 @@ class ApplicationRecord(BaseModel):
     id: str
     opportunity: Opportunity
     status: ApplicationStatus = ApplicationStatus.discovered
+    is_archived: bool = False
     contact: Optional[Contact] = None
     submitted_at: Optional[datetime] = None
     notified_at: Optional[datetime] = None
