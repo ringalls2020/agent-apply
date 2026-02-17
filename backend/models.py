@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 class ApplicationStatus(str, Enum):
     discovered = "discovered"
     review = "review"
+    viewed = "viewed"
     applying = "applying"
     applied = "applied"
     notified = "notified"
@@ -53,6 +54,31 @@ class AgentRunRequest(BaseModel):
 
 class AgentRunResponse(BaseModel):
     applications: List[ApplicationRecord]
+
+
+class ApplicationsSearchResponse(BaseModel):
+    applications: List[ApplicationRecord]
+    total_count: int
+    limit: int
+    offset: int
+
+
+class BulkApplyRequest(BaseModel):
+    application_ids: List[str] = Field(min_length=1, max_length=10)
+
+
+class BulkApplySkippedItem(BaseModel):
+    application_id: str
+    reason: str
+    status: ApplicationStatus | None = None
+
+
+class BulkApplyResponse(BaseModel):
+    run_id: str | None = None
+    status_url: str | None = None
+    accepted_application_ids: List[str] = Field(default_factory=list)
+    skipped: List[BulkApplySkippedItem] = Field(default_factory=list)
+    applications: List[ApplicationRecord] = Field(default_factory=list)
 
 
 class RunKind(str, Enum):

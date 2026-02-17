@@ -40,6 +40,27 @@ type BackendApplicationsResponse = {
   applications: BackendApplication[];
 };
 
+type BackendApplicationsSearchResponse = {
+  applications: BackendApplication[];
+  total_count: number;
+  limit: number;
+  offset: number;
+};
+
+type BackendBulkApplySkippedItem = {
+  application_id: string;
+  reason: string;
+  status: string | null;
+};
+
+type BackendBulkApplyResponse = {
+  run_id: string | null;
+  status_url: string | null;
+  accepted_application_ids: string[];
+  skipped: BackendBulkApplySkippedItem[];
+  applications: BackendApplication[];
+};
+
 type BackendPreferenceResponse = {
   interests: string[];
   locations: string[];
@@ -114,6 +135,18 @@ type GraphQLProfileInput = {
   sensitive?: GraphQLSensitiveInput | null;
 };
 
+type GraphQLApplicationsFilterInput = {
+  statuses?: string[] | null;
+  q?: string | null;
+  companies?: string[] | null;
+  sources?: string[] | null;
+  hasContact?: boolean | null;
+  discoveredFrom?: string | null;
+  discoveredTo?: string | null;
+  sortBy?: string | null;
+  sortDir?: string | null;
+};
+
 const typeDefs = /* GraphQL */ `
   type User {
     id: ID!
@@ -131,6 +164,7 @@ const typeDefs = /* GraphQL */ `
     title: String!
     company: String!
     status: String!
+    source: String!
     contactName: String!
     contactEmail: String!
     submittedAt: String!
@@ -175,6 +209,27 @@ const typeDefs = /* GraphQL */ `
     sensitive: SensitiveProfile!
   }
 
+  type ApplicationsSearchResult {
+    applications: [Application!]!
+    totalCount: Int!
+    limit: Int!
+    offset: Int!
+  }
+
+  type BulkApplySkippedItem {
+    applicationId: ID!
+    reason: String!
+    status: String
+  }
+
+  type BulkApplyResult {
+    runId: String
+    statusUrl: String
+    acceptedApplicationIds: [ID!]!
+    skipped: [BulkApplySkippedItem!]!
+    applications: [Application!]!
+  }
+
   input CustomAnswerOverrideInput {
     questionKey: String!
     answer: String!
@@ -208,9 +263,22 @@ const typeDefs = /* GraphQL */ `
     sensitive: SensitiveProfileInput
   }
 
+  input ApplicationFilterInput {
+    statuses: [String!]
+    q: String
+    companies: [String!]
+    sources: [String!]
+    hasContact: Boolean
+    discoveredFrom: String
+    discoveredTo: String
+    sortBy: String
+    sortDir: String
+  }
+
   type Query {
     me: User!
     applications: [Application!]!
+    applicationsSearch(filter: ApplicationFilterInput, limit: Int = 25, offset: Int = 0): ApplicationsSearchResult!
     profile: ApplicationProfile!
   }
 
@@ -220,6 +288,9 @@ const typeDefs = /* GraphQL */ `
     updatePreferences(interests: [String!]!, applicationsPerDay: Int!): User!
     uploadResume(filename: String!, text: String!): User!
     runAgent: [Application!]!
+    applySelectedApplications(applicationIds: [ID!]!): BulkApplyResult!
+    markApplicationViewed(applicationId: ID!): Application!
+    markApplicationApplied(applicationId: ID!): Application!
     updateProfile(input: ApplicationProfileInput!): ApplicationProfile!
   }
 `;
@@ -229,6 +300,19 @@ function requireToken(token: string | null): string {
     throw new Error("Unauthorized");
   }
   return token;
+}
+
+function deriveApplicationSource(jobUrl: string): string {
+  try {
+    const host = new URL(jobUrl).hostname.toLowerCase();
+    if (host.includes("greenhouse")) return "greenhouse";
+    if (host.includes("lever.co")) return "lever";
+    if (host.includes("smartrecruiters")) return "smartrecruiters";
+    if (host.includes("myworkdayjobs.com") || host.includes("workday")) return "workday";
+    return "other";
+  } catch {
+    return "other";
+  }
 }
 
 function toGraphQLUser(user: BackendAuthUser) {
@@ -250,10 +334,25 @@ function toGraphQLApplication(application: BackendApplication) {
     title: application.opportunity.title,
     company: application.opportunity.company,
     status: application.status,
+    source: deriveApplicationSource(application.opportunity.url),
     contactName: application.contact?.name ?? "",
     contactEmail: application.contact?.email ?? "",
     submittedAt: application.submitted_at ?? "",
     jobUrl: application.opportunity.url,
+  };
+}
+
+function toGraphQLBulkApplyResult(response: BackendBulkApplyResponse) {
+  return {
+    runId: response.run_id,
+    statusUrl: response.status_url,
+    acceptedApplicationIds: response.accepted_application_ids,
+    skipped: response.skipped.map((item) => ({
+      applicationId: item.application_id,
+      reason: item.reason,
+      status: item.status,
+    })),
+    applications: response.applications.map(toGraphQLApplication),
   };
 }
 
@@ -368,6 +467,40 @@ function toBackendProfilePayload(input: GraphQLProfileInput, current: BackendApp
   };
 }
 
+function buildApplicationsSearchPath(
+  filter: GraphQLApplicationsFilterInput | null | undefined,
+  limit: number,
+  offset: number,
+): string {
+  const params = new URLSearchParams();
+  params.set("limit", String(limit));
+  params.set("offset", String(offset));
+
+  if (filter?.q?.trim()) params.set("q", filter.q.trim());
+  for (const status of filter?.statuses ?? []) {
+    if (status?.trim()) params.append("statuses", status.trim());
+  }
+  for (const company of filter?.companies ?? []) {
+    if (company?.trim()) params.append("companies", company.trim());
+  }
+  for (const source of filter?.sources ?? []) {
+    if (source?.trim()) params.append("sources", source.trim());
+  }
+  if (typeof filter?.hasContact === "boolean") {
+    params.set("has_contact", String(filter.hasContact));
+  }
+  if (filter?.discoveredFrom?.trim()) {
+    params.set("discovered_from", filter.discoveredFrom.trim());
+  }
+  if (filter?.discoveredTo?.trim()) {
+    params.set("discovered_to", filter.discoveredTo.trim());
+  }
+  if (filter?.sortBy?.trim()) params.set("sort_by", filter.sortBy.trim());
+  if (filter?.sortDir?.trim()) params.set("sort_dir", filter.sortDir.trim());
+
+  return `/v1/applications/search?${params.toString()}`;
+}
+
 const schema = createSchema({
   typeDefs,
   resolvers: {
@@ -383,6 +516,23 @@ const schema = createSchema({
           { token },
         );
         return response.applications.map(toGraphQLApplication);
+      },
+      applicationsSearch: async (
+        _root,
+        args: { filter?: GraphQLApplicationsFilterInput; limit?: number; offset?: number },
+        ctx: GraphQLContext,
+      ) => {
+        const token = requireToken(ctx.token);
+        const limit = Math.min(Math.max(args.limit ?? 25, 1), 100);
+        const offset = Math.max(args.offset ?? 0, 0);
+        const path = buildApplicationsSearchPath(args.filter, limit, offset);
+        const response = await requestBackend<BackendApplicationsSearchResponse>(path, { token });
+        return {
+          applications: response.applications.map(toGraphQLApplication),
+          totalCount: response.total_count,
+          limit: response.limit,
+          offset: response.offset,
+        };
       },
       profile: async (_root, _args, ctx: GraphQLContext) => {
         const token = requireToken(ctx.token);
@@ -485,6 +635,52 @@ const schema = createSchema({
           },
         );
         return response.applications.map(toGraphQLApplication);
+      },
+      applySelectedApplications: async (
+        _root,
+        args: { applicationIds: string[] },
+        ctx: GraphQLContext,
+      ) => {
+        const token = requireToken(ctx.token);
+        const response = await requestBackend<BackendBulkApplyResponse>(
+          "/v1/applications/apply",
+          {
+            method: "POST",
+            token,
+            body: { application_ids: args.applicationIds },
+          },
+        );
+        return toGraphQLBulkApplyResult(response);
+      },
+      markApplicationViewed: async (
+        _root,
+        args: { applicationId: string },
+        ctx: GraphQLContext,
+      ) => {
+        const token = requireToken(ctx.token);
+        const response = await requestBackend<BackendApplication>(
+          `/v1/applications/${args.applicationId}/mark-viewed`,
+          {
+            method: "POST",
+            token,
+          },
+        );
+        return toGraphQLApplication(response);
+      },
+      markApplicationApplied: async (
+        _root,
+        args: { applicationId: string },
+        ctx: GraphQLContext,
+      ) => {
+        const token = requireToken(ctx.token);
+        const response = await requestBackend<BackendApplication>(
+          `/v1/applications/${args.applicationId}/mark-applied`,
+          {
+            method: "POST",
+            token,
+          },
+        );
+        return toGraphQLApplication(response);
       },
       updateProfile: async (
         _root,

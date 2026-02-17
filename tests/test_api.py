@@ -386,6 +386,94 @@ def test_agent_run_with_autosubmit_starts_apply_run(test_client: TestClient) -> 
     assert fake_cloud.apply_run_starts == 1
 
 
+def test_mark_viewed_transitions_review_and_is_idempotent(test_client: TestClient) -> None:
+    user = _signup_user(test_client, full_name="Jane Viewed", email="viewed@example.com")
+    _seed_profile(test_client, user_id=user["user"]["id"], applications_per_day=2)
+
+    run_response = test_client.post(
+        "/v1/agent/run",
+        headers=_auth_headers(user["token"]),
+    )
+    assert run_response.status_code == 200
+    application_id = run_response.json()["applications"][0]["id"]
+
+    viewed_response = test_client.post(
+        f"/v1/applications/{application_id}/mark-viewed",
+        headers=_auth_headers(user["token"]),
+    )
+    assert viewed_response.status_code == 200
+    assert viewed_response.json()["status"] == "viewed"
+
+    viewed_again_response = test_client.post(
+        f"/v1/applications/{application_id}/mark-viewed",
+        headers=_auth_headers(user["token"]),
+    )
+    assert viewed_again_response.status_code == 200
+    assert viewed_again_response.json()["status"] == "viewed"
+
+
+def test_bulk_apply_accepts_review_and_viewed_statuses(test_client: TestClient) -> None:
+    user = _signup_user(test_client, full_name="Jane Bulk", email="bulk@example.com")
+    _seed_profile(test_client, user_id=user["user"]["id"], applications_per_day=2)
+
+    run_response = test_client.post(
+        "/v1/agent/run",
+        headers=_auth_headers(user["token"]),
+    )
+    assert run_response.status_code == 200
+    applications = run_response.json()["applications"]
+    first_application_id = applications[0]["id"]
+    second_application_id = applications[1]["id"]
+
+    mark_viewed_response = test_client.post(
+        f"/v1/applications/{first_application_id}/mark-viewed",
+        headers=_auth_headers(user["token"]),
+    )
+    assert mark_viewed_response.status_code == 200
+    assert mark_viewed_response.json()["status"] == "viewed"
+
+    apply_response = test_client.post(
+        "/v1/applications/apply",
+        headers=_auth_headers(user["token"]),
+        json={"application_ids": [first_application_id, second_application_id]},
+    )
+    assert apply_response.status_code == 200
+    body = apply_response.json()
+    assert body["run_id"]
+    assert body["accepted_application_ids"] == [first_application_id, second_application_id]
+    assert body["skipped"] == []
+    assert all(item["status"] == "applying" for item in body["applications"])
+
+    fake_cloud = test_client.app.state.test_fake_cloud_client
+    assert fake_cloud.apply_run_starts == 1
+
+    mark_viewed_after_applying = test_client.post(
+        f"/v1/applications/{first_application_id}/mark-viewed",
+        headers=_auth_headers(user["token"]),
+    )
+    assert mark_viewed_after_applying.status_code == 200
+    assert mark_viewed_after_applying.json()["status"] == "applying"
+
+
+def test_mark_viewed_is_user_scoped(test_client: TestClient) -> None:
+    owner = _signup_user(test_client, full_name="Jane Owner", email="owner@example.com")
+    other = _signup_user(test_client, full_name="Jane Other", email="other-owner@example.com")
+    _seed_profile(test_client, user_id=owner["user"]["id"], applications_per_day=1)
+
+    run_response = test_client.post(
+        "/v1/agent/run",
+        headers=_auth_headers(owner["token"]),
+    )
+    assert run_response.status_code == 200
+    application_id = run_response.json()["applications"][0]["id"]
+
+    forbidden_response = test_client.post(
+        f"/v1/applications/{application_id}/mark-viewed",
+        headers=_auth_headers(other["token"]),
+    )
+    assert forbidden_response.status_code == 404
+
+
 def test_legacy_application_endpoints_return_gone(test_client: TestClient) -> None:
     response_run = test_client.post(
         "/agent/run",

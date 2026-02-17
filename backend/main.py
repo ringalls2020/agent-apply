@@ -5,7 +5,7 @@ from pathlib import Path
 from time import perf_counter, sleep
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
@@ -26,6 +26,7 @@ from .models import (
     ApplicationProfileResponse,
     ApplicationProfileUpsertRequest,
     ApplicationRecord,
+    ApplicationsSearchResponse,
     ApplicationStatus,
     AgentRunResponse,
     AuthLoginRequest,
@@ -33,6 +34,9 @@ from .models import (
     AuthSignupRequest,
     AuthUserProfile,
     ApplyAttemptCallback,
+    BulkApplyRequest,
+    BulkApplyResponse,
+    BulkApplySkippedItem,
     ApplyRunStartRequest,
     ApplyRunStartResponse,
     ApplyRunStatusResponse,
@@ -489,6 +493,217 @@ def create_app(
             )
         applications = fastapi_app.state.store.list_for_user(user_id)
         return AgentRunResponse(applications=applications)
+
+    @fastapi_app.get("/v1/applications/search", response_model=ApplicationsSearchResponse)
+    def search_user_applications(
+        request: Request,
+        statuses: list[str] = Query(default_factory=list),
+        q: str | None = None,
+        companies: list[str] = Query(default_factory=list),
+        sources: list[str] = Query(default_factory=list),
+        has_contact: bool | None = None,
+        discovered_from: datetime | None = None,
+        discovered_to: datetime | None = None,
+        sort_by: str = "discovered_at",
+        sort_dir: str = "desc",
+        limit: int = 25,
+        offset: int = 0,
+    ) -> ApplicationsSearchResponse:
+        user_id = _authenticated_user_id_from_request(request)
+
+        allowed_sort_by = {"discovered_at", "company", "status"}
+        if sort_by not in allowed_sort_by:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid sort_by. Allowed values: discovered_at, company, status.",
+            )
+
+        normalized_sort_dir = sort_dir.strip().lower()
+        if normalized_sort_dir not in {"asc", "desc"}:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid sort_dir. Allowed values: asc, desc.",
+            )
+
+        parsed_statuses: list[ApplicationStatus] = []
+        for raw_status in statuses:
+            try:
+                parsed_statuses.append(ApplicationStatus(raw_status.strip().lower()))
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid status filter: {raw_status}",
+                ) from exc
+
+        allowed_sources = {"greenhouse", "lever", "smartrecruiters", "workday", "other"}
+        normalized_sources: list[str] = []
+        for source in sources:
+            normalized_source = source.strip().lower()
+            if not normalized_source:
+                continue
+            if normalized_source not in allowed_sources:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid source filter: {source}",
+                )
+            normalized_sources.append(normalized_source)
+
+        applications, total_count = fastapi_app.state.store.search_for_user(
+            user_id=user_id,
+            statuses=parsed_statuses,
+            q=q,
+            companies=companies,
+            sources=normalized_sources,
+            has_contact=has_contact,
+            discovered_from=discovered_from,
+            discovered_to=discovered_to,
+            sort_by=sort_by,
+            sort_dir=normalized_sort_dir,
+            limit=limit,
+            offset=offset,
+        )
+        return ApplicationsSearchResponse(
+            applications=applications,
+            total_count=total_count,
+            limit=min(max(limit, 1), 100),
+            offset=max(offset, 0),
+        )
+
+    @fastapi_app.post("/v1/applications/apply", response_model=BulkApplyResponse)
+    def apply_selected_applications(
+        payload: BulkApplyRequest,
+        request: Request,
+    ) -> BulkApplyResponse:
+        user_id = _authenticated_user_id_from_request(request)
+        normalized_ids: list[str] = []
+        seen_ids: set[str] = set()
+        for raw_id in payload.application_ids:
+            normalized_id = raw_id.strip()
+            if not normalized_id or normalized_id in seen_ids:
+                continue
+            normalized_ids.append(normalized_id)
+            seen_ids.add(normalized_id)
+
+        if not normalized_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="At least one valid application id is required.",
+            )
+        if len(normalized_ids) > 10:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot apply more than 10 applications per request.",
+            )
+
+        existing = fastapi_app.state.store.get_for_user_by_ids(
+            user_id=user_id,
+            application_ids=normalized_ids,
+        )
+        existing_by_id = {application.id: application for application in existing}
+
+        eligible_statuses = {ApplicationStatus.review, ApplicationStatus.viewed}
+        accepted_ids: list[str] = []
+        accepted_jobs: list[ApplyTargetJob] = []
+        skipped: list[BulkApplySkippedItem] = []
+
+        for application_id in normalized_ids:
+            application = existing_by_id.get(application_id)
+            if application is None:
+                skipped.append(
+                    BulkApplySkippedItem(
+                        application_id=application_id,
+                        reason="application_not_found",
+                    )
+                )
+                continue
+
+            if application.status not in eligible_statuses:
+                skipped.append(
+                    BulkApplySkippedItem(
+                        application_id=application_id,
+                        reason="ineligible_status",
+                        status=application.status,
+                    )
+                )
+                continue
+
+            accepted_ids.append(application_id)
+            accepted_jobs.append(
+                ApplyTargetJob(
+                    external_job_id=application.opportunity.id,
+                    title=application.opportunity.title,
+                    company=application.opportunity.company,
+                    apply_url=application.opportunity.url,
+                )
+            )
+
+        if not accepted_ids:
+            return BulkApplyResponse(
+                run_id=None,
+                status_url=None,
+                accepted_application_ids=[],
+                skipped=skipped,
+                applications=[],
+            )
+
+        try:
+            apply_run = fastapi_app.state.orchestrator.start_apply_run(
+                user_id=user_id,
+                payload=ApplyRunStartRequest(jobs=accepted_jobs),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        except CloudClientError as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+        updated_applications = fastapi_app.state.store.update_status_for_user_application_ids(
+            user_id=user_id,
+            application_ids=accepted_ids,
+            status=ApplicationStatus.applying,
+        )
+
+        return BulkApplyResponse(
+            run_id=apply_run.run_id,
+            status_url=apply_run.status_url,
+            accepted_application_ids=accepted_ids,
+            skipped=skipped,
+            applications=updated_applications,
+        )
+
+    @fastapi_app.post(
+        "/v1/applications/{application_id}/mark-viewed",
+        response_model=ApplicationRecord,
+    )
+    def mark_application_viewed(application_id: str, request: Request) -> ApplicationRecord:
+        user_id = _authenticated_user_id_from_request(request)
+        application = fastapi_app.state.store.mark_viewed_for_user_application(
+            user_id=user_id,
+            application_id=application_id,
+        )
+        if application is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Application not found",
+            )
+        return application
+
+    @fastapi_app.post(
+        "/v1/applications/{application_id}/mark-applied",
+        response_model=ApplicationRecord,
+    )
+    def mark_application_applied(application_id: str, request: Request) -> ApplicationRecord:
+        user_id = _authenticated_user_id_from_request(request)
+        application = fastapi_app.state.store.mark_applied_for_user_application(
+            user_id=user_id,
+            application_id=application_id,
+            submitted_at=datetime.utcnow(),
+        )
+        if application is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Application not found",
+            )
+        return application
 
     @fastapi_app.get("/admin", response_class=HTMLResponse)
     def admin_dashboard(request: Request) -> HTMLResponse:

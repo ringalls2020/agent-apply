@@ -13,7 +13,7 @@ function statusVariant(status: string): "default" | "success" | "warning" | "dan
 
   if (["submitted", "applied", "processing", "in review", "applying"].includes(normalized)) return "info";
   if (["interview", "offer", "hired", "completed", "success"].includes(normalized)) return "success";
-  if (["queued", "pending", "draft", "review"].includes(normalized)) return "warning";
+  if (["queued", "pending", "draft", "review", "viewed"].includes(normalized)) return "warning";
   if (["rejected", "failed", "error", "declined"].includes(normalized)) return "danger";
   return "default";
 }
