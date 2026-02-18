@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 
+import httpx
+
 from .live import GreenhouseLiveAdapter, LeverLiveAdapter, SmartRecruitersLiveAdapter
 from .synthetic import SyntheticAdapter
 
@@ -18,7 +20,7 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def build_configured_adapters() -> list[object]:
+def build_configured_adapters(*, http_client: httpx.Client | None = None) -> list[object]:
     """Build adapters with live connectors when configured, otherwise synthetic fallbacks."""
     adapters: list[object] = []
     use_only_live_adapters = _env_flag("USE_ONLY_LIVE_ADAPTERS", default=False)
@@ -28,17 +30,24 @@ def build_configured_adapters() -> list[object]:
     smartrecruiters_companies = _csv_env("SMARTRECRUITERS_COMPANIES")
 
     if greenhouse_boards:
-        adapters.append(GreenhouseLiveAdapter(greenhouse_boards))
+        adapters.append(
+            GreenhouseLiveAdapter(greenhouse_boards, client=http_client)
+        )
     elif not use_only_live_adapters:
         adapters.append(SyntheticAdapter("greenhouse"))
 
     if lever_companies:
-        adapters.append(LeverLiveAdapter(lever_companies))
+        adapters.append(LeverLiveAdapter(lever_companies, client=http_client))
     elif not use_only_live_adapters:
         adapters.append(SyntheticAdapter("lever"))
 
     if smartrecruiters_companies:
-        adapters.append(SmartRecruitersLiveAdapter(smartrecruiters_companies))
+        adapters.append(
+            SmartRecruitersLiveAdapter(
+                smartrecruiters_companies,
+                client=http_client,
+            )
+        )
     elif not use_only_live_adapters:
         adapters.append(SyntheticAdapter("smartrecruiters"))
 

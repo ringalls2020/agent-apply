@@ -47,18 +47,6 @@ from .security import create_body_signature, create_hs256_jwt
 
 logger = logging.getLogger(__name__)
 
-
-def _json_dumps(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=True, separators=(",", ":"), default=str)
-
-
-def _json_loads(value: str, default: Any) -> Any:
-    try:
-        return json.loads(value)
-    except Exception:
-        return default
-
-
 def _bool_env(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -591,7 +579,13 @@ class DiscoveryCoordinator:
 
 
 class CallbackEmitter:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        http_client: httpx.Client | None = None,
+        max_attempts: int | None = None,
+        retry_base_delay_ms: int | None = None,
+    ) -> None:
         self.enabled = os.getenv("MAIN_CALLBACK_URL", "").strip() != ""
         self.callback_url = os.getenv(
             "MAIN_CALLBACK_URL",
@@ -607,6 +601,20 @@ class CallbackEmitter:
             "CLOUD_CALLBACK_SIGNATURE_SECRET",
             self.signing_secret,
         )
+        self.max_attempts = max(
+            max_attempts
+            if max_attempts is not None
+            else _int_env("CALLBACK_RETRY_MAX_ATTEMPTS", 3, min_value=1),
+            1,
+        )
+        self.retry_base_delay_ms = max(
+            retry_base_delay_ms
+            if retry_base_delay_ms is not None
+            else _int_env("CALLBACK_RETRY_BASE_DELAY_MS", 250, min_value=50),
+            50,
+        )
+        self._owns_client = http_client is None
+        self.http_client = http_client or httpx.Client(timeout=20.0)
 
     def emit(self, payload: ApplyAttemptCallbackPayload) -> None:
         if not self.enabled:
@@ -638,9 +646,16 @@ class CallbackEmitter:
             "x-idempotency-key": payload.idempotency_key,
         }
 
-        try:
-            response = httpx.post(self.callback_url, content=body, headers=headers, timeout=20.0)
-            if response.status_code >= 300:
+        for attempt_index in range(self.max_attempts):
+            try:
+                response = self.http_client.post(
+                    self.callback_url,
+                    content=body,
+                    headers=headers,
+                    timeout=20.0,
+                )
+                if response.status_code < 300:
+                    return
                 logger.warning(
                     "callback_delivery_non_success",
                     extra={
@@ -648,13 +663,28 @@ class CallbackEmitter:
                         "body": response.text,
                         "run_id": payload.run_id,
                         "attempt_id": payload.attempt.attempt_id,
+                        "attempt_index": attempt_index + 1,
+                        "max_attempts": self.max_attempts,
                     },
                 )
-        except Exception:
-            logger.exception(
-                "callback_delivery_failed",
-                extra={"run_id": payload.run_id, "attempt_id": payload.attempt.attempt_id},
-            )
+            except Exception:
+                logger.exception(
+                    "callback_delivery_failed",
+                    extra={
+                        "run_id": payload.run_id,
+                        "attempt_id": payload.attempt.attempt_id,
+                        "attempt_index": attempt_index + 1,
+                        "max_attempts": self.max_attempts,
+                    },
+                )
+
+            if attempt_index + 1 < self.max_attempts:
+                delay_seconds = (self.retry_base_delay_ms * (2**attempt_index)) / 1000.0
+                time.sleep(delay_seconds)
+
+    def close(self) -> None:
+        if self._owns_client:
+            self.http_client.close()
 
 
 class MatchingService:
@@ -724,10 +754,12 @@ class ApplyExecutor(Protocol):
 
 
 class OpenAITextGenerator:
-    def __init__(self) -> None:
+    def __init__(self, *, client: httpx.Client | None = None) -> None:
         self.api_key = os.getenv("OPENAI_API_KEY", "").strip()
         self.model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini").strip()
         self.timeout_seconds = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "20"))
+        self._owns_client = client is None
+        self.client = client or httpx.Client(timeout=self.timeout_seconds)
 
     @property
     def enabled(self) -> bool:
@@ -738,7 +770,7 @@ class OpenAITextGenerator:
             return None
 
         try:
-            response = httpx.post(
+            response = self.client.post(
                 "https://api.openai.com/v1/responses",
                 headers={
                     "authorization": f"Bearer {self.api_key}",
@@ -779,14 +811,14 @@ class OpenAITextGenerator:
                             return candidate
         return None
 
+    def close(self) -> None:
+        if self._owns_client:
+            self.client.close()
+
 
 class FormAnswerSynthesizer:
     def __init__(self, *, text_generator: OpenAITextGenerator | None = None) -> None:
         self.text_generator = text_generator or OpenAITextGenerator()
-
-    @staticmethod
-    def _decline_default(value: str | None) -> str:
-        return value.strip() if isinstance(value, str) and value.strip() else "decline_to_answer"
 
     @staticmethod
     def _application_profile(request: ApplyRunRequest) -> dict[str, Any]:
@@ -1476,14 +1508,20 @@ class PlaywrightApplyExecutor:
 
 
 class ApplyService:
-    def __init__(self, *, store: JobIntelStore, callback_emitter: CallbackEmitter) -> None:
+    def __init__(
+        self,
+        *,
+        store: JobIntelStore,
+        callback_emitter: CallbackEmitter,
+        http_client: httpx.Client | None = None,
+    ) -> None:
         self.store = store
         self.callback_emitter = callback_emitter
-        self.answer_synthesizer = FormAnswerSynthesizer()
-
-    @staticmethod
-    def _autonomous_browsing_enabled() -> bool:
-        return _bool_env("ENABLE_AUTONOMOUS_BROWSING", False)
+        self._owns_http_client = http_client is None
+        self.http_client = http_client or httpx.Client(timeout=20.0)
+        self.answer_synthesizer = FormAnswerSynthesizer(
+            text_generator=OpenAITextGenerator(client=self.http_client)
+        )
 
     def _build_executor(self) -> ApplyExecutor:
         flags = ApplyExecutionFlags()
@@ -1505,6 +1543,13 @@ class ApplyService:
             except Exception:
                 logger.exception("playwright_executor_init_failed")
         return SimulatedApplyExecutor()
+
+    def close(self) -> None:
+        close_emitter = getattr(self.callback_emitter, "close", None)
+        if callable(close_emitter):
+            close_emitter()
+        if self._owns_http_client:
+            self.http_client.close()
 
     async def execute(self, run_id: str, *, assume_claimed: bool = False) -> None:
         if not assume_claimed and not self.store.claim_apply_run(run_id):

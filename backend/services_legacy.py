@@ -8,6 +8,9 @@ from typing import Any, Callable, Dict, List
 from uuid import uuid4
 
 from sqlalchemy import and_, func, not_, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from common.time import utc_now
@@ -106,6 +109,34 @@ class PostgresStore:
             extra={"record_id": stored.id, "status": stored.status.value, "user_id": user_id},
         )
         return stored
+
+    def upsert_many_for_user(
+        self,
+        user_id: str,
+        records: list[ApplicationRecord],
+    ) -> list[ApplicationRecord]:
+        if not records:
+            return []
+
+        with self._session_factory() as session:
+            ids = [record.id for record in records]
+            existing_rows = session.scalars(
+                select(ApplicationRecordRow).where(ApplicationRecordRow.id.in_(ids))
+            ).all()
+            row_by_id: dict[str, ApplicationRecordRow] = {
+                row.id: row for row in existing_rows
+            }
+
+            for record in records:
+                row = row_by_id.get(record.id)
+                if row is None:
+                    row = ApplicationRecordRow(id=record.id, status=record.status.value)
+                    session.add(row)
+                    row_by_id[record.id] = row
+                self._sync_row(row=row, record=record, user_id=user_id)
+
+            session.commit()
+            return [self._to_record(row_by_id[record.id]) for record in records]
 
     def _archive_cutoff(self) -> datetime:
         return utc_now() - timedelta(days=self._job_listing_ttl_days)
@@ -1118,22 +1149,44 @@ class MainPlatformStore:
         external_run_id: str,
         payload_hash: str,
     ) -> bool:
+        payload = {
+            "idempotency_key": idempotency_key,
+            "event_type": event_type,
+            "external_run_id": external_run_id,
+            "payload_hash": payload_hash,
+            "received_at": utc_now(),
+        }
         with self._session_factory() as session:
-            row = session.get(WebhookEventRow, idempotency_key)
-            if row is not None:
-                return False
-
-            session.add(
-                WebhookEventRow(
-                    idempotency_key=idempotency_key,
-                    event_type=event_type,
-                    external_run_id=external_run_id,
-                    payload_hash=payload_hash,
-                    received_at=utc_now(),
+            dialect_name = session.bind.dialect.name if session.bind else ""
+            if dialect_name == "postgresql":
+                result = session.execute(
+                    pg_insert(WebhookEventRow)
+                    .values(**payload)
+                    .on_conflict_do_nothing(
+                        index_elements=[WebhookEventRow.idempotency_key]
+                    )
                 )
-            )
-            session.commit()
-            return True
+                session.commit()
+                return bool(result.rowcount)
+
+            if dialect_name == "sqlite":
+                result = session.execute(
+                    sqlite_insert(WebhookEventRow)
+                    .values(**payload)
+                    .on_conflict_do_nothing(
+                        index_elements=[WebhookEventRow.idempotency_key]
+                    )
+                )
+                session.commit()
+                return bool(result.rowcount)
+
+            session.add(WebhookEventRow(**payload))
+            try:
+                session.commit()
+                return True
+            except IntegrityError:
+                session.rollback()
+                return False
 
     def mark_webhook_event_processed(self, *, idempotency_key: str) -> None:
         with self._session_factory() as session:

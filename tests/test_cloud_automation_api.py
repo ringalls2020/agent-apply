@@ -6,11 +6,13 @@ from datetime import timedelta
 import pytest
 from fastapi.testclient import TestClient
 
+import cloud_automation.services_legacy as cloud_services_legacy
 from common.time import utc_now
 from cloud_automation.db_models import NormalizedJobRow
 from cloud_automation.main import create_app
+from cloud_automation.models import ApplyAttemptCallbackPayload, ApplyAttemptRecord, ApplyAttemptStatus
 from cloud_automation.security import create_hs256_jwt
-from cloud_automation.services import PlaywrightApplyExecutor, SimulatedApplyExecutor
+from cloud_automation.services import CallbackEmitter, PlaywrightApplyExecutor, SimulatedApplyExecutor
 
 
 def _auth_headers() -> dict[str, str]:
@@ -251,3 +253,61 @@ def test_apply_dev_review_mode_enabled_when_both_flags_set(
         executor = app.state.apply._build_executor()
         assert isinstance(executor, PlaywrightApplyExecutor)
         assert executor.dev_review_mode is True
+
+
+class _FakeHttpResponse:
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+        self.text = f"status={status_code}"
+
+
+class _FakeHttpClient:
+    def __init__(self, status_codes: list[int]) -> None:
+        self.status_codes = status_codes
+        self.calls = 0
+
+    def post(self, *_args, **_kwargs) -> _FakeHttpResponse:
+        index = min(self.calls, len(self.status_codes) - 1)
+        status_code = self.status_codes[index]
+        self.calls += 1
+        return _FakeHttpResponse(status_code=status_code)
+
+
+def _build_callback_payload() -> ApplyAttemptCallbackPayload:
+    return ApplyAttemptCallbackPayload(
+        idempotency_key="idem-callback-retry",
+        run_id="run-1",
+        user_ref="user-1",
+        attempt=ApplyAttemptRecord(
+            attempt_id="attempt-1",
+            external_job_id="job-1",
+            job_url="https://example.com/jobs/1",
+            status=ApplyAttemptStatus.succeeded,
+        ),
+    )
+
+
+def test_callback_emitter_retries_until_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MAIN_CALLBACK_URL", "https://callback.test/internal")
+    monkeypatch.setattr(cloud_services_legacy.time, "sleep", lambda _seconds: None)
+
+    client = _FakeHttpClient([500, 200])
+    emitter = CallbackEmitter(http_client=client, max_attempts=3, retry_base_delay_ms=1)
+    emitter.emit(_build_callback_payload())
+
+    assert client.calls == 2
+
+
+def test_callback_emitter_stops_after_max_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MAIN_CALLBACK_URL", "https://callback.test/internal")
+    monkeypatch.setattr(cloud_services_legacy.time, "sleep", lambda _seconds: None)
+
+    client = _FakeHttpClient([500, 500, 500, 500])
+    emitter = CallbackEmitter(http_client=client, max_attempts=3, retry_base_delay_ms=1)
+    emitter.emit(_build_callback_payload())
+
+    assert client.calls == 3

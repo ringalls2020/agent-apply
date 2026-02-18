@@ -6,10 +6,16 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request, status
 
 from .adapters import build_configured_adapters
-from .db import create_db_engine, create_session_factory, get_database_url
+from .db import (
+    create_db_engine,
+    create_session_factory,
+    ensure_runtime_indexes,
+    get_database_url,
+)
 from .db_models import Base
 from .models import (
     ApplyRunCreated,
@@ -46,7 +52,17 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     engine = create_db_engine(get_database_url(database_url))
     session_factory = create_session_factory(engine)
-    configured_adapters = build_configured_adapters()
+    app_env = os.getenv("APP_ENV", os.getenv("ENV", "development")).strip().lower()
+    schema_create_default = app_env in {"local", "dev", "development", "test"}
+    enable_schema_create = (
+        os.getenv("ENABLE_CLOUD_SCHEMA_CREATE", str(schema_create_default).lower())
+        .strip()
+        .lower()
+        in {"1", "true", "yes", "on"}
+    )
+    http_timeout = float(os.getenv("CLOUD_HTTP_TIMEOUT_SECONDS", "20"))
+    shared_http_client = httpx.Client(timeout=http_timeout)
+    configured_adapters = build_configured_adapters(http_client=shared_http_client)
     ttl_raw = os.getenv("JOB_LISTING_TTL_DAYS", "21")
     try:
         job_listing_ttl_days = max(int(ttl_raw), 1)
@@ -55,7 +71,9 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        Base.metadata.create_all(bind=app.state.engine)
+        if app.state.enable_schema_create:
+            Base.metadata.create_all(bind=app.state.engine)
+        ensure_runtime_indexes(app.state.engine)
         if app.state.enable_embedded_discovery_loop:
             app.state.discovery_task = asyncio.create_task(discovery_loop())
         try:
@@ -66,10 +84,21 @@ def create_app(database_url: str | None = None) -> FastAPI:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+            close_apply = getattr(app.state.apply, "close", None)
+            if callable(close_apply):
+                close_apply()
+            for adapter in app.state.adapters:
+                close_adapter = getattr(adapter, "close", None)
+                if callable(close_adapter):
+                    close_adapter()
+            app.state.http_client.close()
             app.state.engine.dispose()
 
     app = FastAPI(title="Job Intel API", version="0.1.0", lifespan=lifespan)
     app.state.engine = engine
+    app.state.http_client = shared_http_client
+    app.state.adapters = configured_adapters
+    app.state.enable_schema_create = enable_schema_create
     app.state.job_listing_ttl_days = job_listing_ttl_days
     app.state.store = JobIntelStore(
         session_factory,
@@ -77,10 +106,14 @@ def create_app(database_url: str | None = None) -> FastAPI:
     )
     app.state.discovery = DiscoveryCoordinator(
         store=app.state.store,
-        adapters=configured_adapters,
+        adapters=app.state.adapters,
     )
     app.state.matching = MatchingService(store=app.state.store)
-    app.state.apply = ApplyService(store=app.state.store, callback_emitter=CallbackEmitter())
+    app.state.apply = ApplyService(
+        store=app.state.store,
+        callback_emitter=CallbackEmitter(http_client=app.state.http_client),
+        http_client=app.state.http_client,
+    )
 
     app.state.auth_secret = os.getenv("CLOUD_AUTOMATION_SIGNING_SECRET", "dev-cloud-signing-secret")
     app.state.auth_audience = os.getenv("CLOUD_AUTOMATION_EXPECTED_AUDIENCE", "job-intel-api")

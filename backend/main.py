@@ -3,7 +3,7 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from time import perf_counter, sleep
+from time import perf_counter
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from .cloud_client import CloudAutomationClient, CloudClientError
+from .config import load_backend_config, parse_int_env
 from .auth import (
     authenticated_user_id_from_request,
     create_user_access_token,
@@ -73,30 +74,16 @@ from .services import (
     MainPlatformStore,
     PostgresStore,
 )
+from .services.agent_run import (
+    resolve_discovered_anchor,
+    wait_for_match_terminal_status,
+)
 from common.time import utc_now
 
 templates = Jinja2Templates(
     directory=str(Path(__file__).resolve().parent / "templates")
 )
 logger = logging.getLogger(__name__)
-_TRUE_VALUES = {"1", "true", "yes", "on"}
-
-
-def _parse_int_env(name: str, default: int) -> int:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    try:
-        return int(value)
-    except ValueError:
-        return default
-
-
-def _parse_bool_env(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in _TRUE_VALUES
 
 
 def create_app(
@@ -104,7 +91,8 @@ def create_app(
     cloud_client: CloudAutomationClient | None = None,
 ) -> FastAPI:
     configure_logging()
-    app_env = os.getenv("APP_ENV", os.getenv("ENV", "development")).strip().lower()
+    config = load_backend_config()
+    app_env = config.app_env
     require_profile_encryption = app_env not in {"dev", "development", "local", "test"}
     validate_profile_encryption_config(required=require_profile_encryption)
     resolved_database_url = get_database_url(database_url)
@@ -117,9 +105,10 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        logger.info("db_schema_initialization_started")
-        Base.metadata.create_all(bind=app.state.engine)
-        logger.info("db_schema_initialization_completed")
+        if app.state.enable_schema_create:
+            logger.info("db_schema_initialization_started")
+            Base.metadata.create_all(bind=app.state.engine)
+            logger.info("db_schema_initialization_completed")
         try:
             yield
         finally:
@@ -132,10 +121,12 @@ def create_app(
 
     fastapi_app = FastAPI(title="Agent Apply", version="0.2.0", lifespan=lifespan)
     fastapi_app.state.engine = engine
-    fastapi_app.state.job_listing_ttl_days = max(
-        1,
-        _parse_int_env("JOB_LISTING_TTL_DAYS", 21),
+    fastapi_app.state.enable_schema_create = config.enable_schema_create
+    fastapi_app.state.job_listing_ttl_days = config.job_listing_ttl_days
+    fastapi_app.state.agent_run_match_poll_interval_seconds = (
+        config.agent_run_match_poll_interval_seconds
     )
+    fastapi_app.state.agent_run_match_poll_max_attempts = config.agent_run_match_poll_max_attempts
 
     # Legacy application records store (used for /v1/applications).
     fastapi_app.state.store = PostgresStore(
@@ -150,7 +141,7 @@ def create_app(
         store=fastapi_app.state.main_store,
         cloud_client=fastapi_app.state.cloud_client,
         application_store=fastapi_app.state.store,
-        default_daily_cap=_parse_int_env("DEFAULT_APPLY_DAILY_CAP", 25),
+        default_daily_cap=config.default_apply_daily_cap,
     )
 
     fastapi_app.state.callback_signing_secret = os.getenv(
@@ -163,7 +154,7 @@ def create_app(
     )
     fastapi_app.state.callback_audience = os.getenv("CLOUD_CALLBACK_AUDIENCE", "main-api")
     fastapi_app.state.callback_issuer = os.getenv("CLOUD_CALLBACK_ISSUER", "job-intel-api")
-    fastapi_app.state.callback_max_clock_skew_seconds = _parse_int_env(
+    fastapi_app.state.callback_max_clock_skew_seconds = parse_int_env(
         "CLOUD_CALLBACK_MAX_CLOCK_SKEW_SECONDS", 300
     )
     fastapi_app.state.required_client_subject = os.getenv(
@@ -177,13 +168,9 @@ def create_app(
         "USER_AUTH_AUDIENCE", "agent-apply-frontend"
     )
     fastapi_app.state.user_auth_token_ttl_seconds = max(
-        1, _parse_int_env("USER_AUTH_TOKEN_TTL_SECONDS", 7 * 24 * 60 * 60)
+        1, parse_int_env("USER_AUTH_TOKEN_TTL_SECONDS", 7 * 24 * 60 * 60)
     )
-    admin_enabled_default = app_env in {"dev", "development", "local", "test"}
-    fastapi_app.state.admin_enabled = _parse_bool_env(
-        "ENABLE_ADMIN_DASHBOARD",
-        default=admin_enabled_default,
-    )
+    fastapi_app.state.admin_enabled = config.admin_enabled
     fastapi_app.state.admin_secret = os.getenv("ADMIN_DASHBOARD_SECRET", "").strip()
 
     def _build_auth_user_profile(user_id: str) -> AuthUserProfile:
@@ -323,7 +310,7 @@ def create_app(
         return _build_auth_user_profile(user_id)
 
     @fastapi_app.post("/v1/agent/run", response_model=AgentRunResponse)
-    def run_agent_for_authenticated_user(request: Request) -> AgentRunResponse:
+    async def run_agent_for_authenticated_user(request: Request) -> AgentRunResponse:
         user_id = authenticated_user_id_from_request(request)
         preferences = fastapi_app.state.main_store.get_preferences(user_id)
         if preferences is None or not preferences.interests:
@@ -342,8 +329,8 @@ def create_app(
         autosubmit_enabled = profile.autosubmit_enabled if profile else False
 
         match_limit = min(max(preferences.applications_per_day, 1), 100)
-        poll_interval_seconds = float(os.getenv("AGENT_RUN_MATCH_POLL_INTERVAL_SECONDS", "0.5"))
-        poll_max_attempts = max(1, _parse_int_env("AGENT_RUN_MATCH_POLL_MAX_ATTEMPTS", 40))
+        poll_interval_seconds = fastapi_app.state.agent_run_match_poll_interval_seconds
+        poll_max_attempts = fastapi_app.state.agent_run_match_poll_max_attempts
 
         try:
             fastapi_app.state.cloud_client.run_discovery_now()
@@ -367,25 +354,26 @@ def create_app(
         except CloudClientError as exc:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
-        latest_status: MatchRunStatusResponse | None = None
-        for _ in range(poll_max_attempts):
+        def _get_status() -> MatchRunStatusResponse:
             try:
-                latest_status = fastapi_app.state.orchestrator.get_match_run(
+                return fastapi_app.state.orchestrator.get_match_run(
                     user_id=user_id,
                     run_id=started.run_id,
                 )
             except ValueError as exc:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+                ) from exc
             except CloudClientError as exc:
-                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+                ) from exc
 
-            if latest_status.status in {
-                MatchRunStatus.completed,
-                MatchRunStatus.partial,
-                MatchRunStatus.failed,
-            }:
-                break
-            sleep(max(0.05, poll_interval_seconds))
+        latest_status = await wait_for_match_terminal_status(
+            get_status=_get_status,
+            poll_interval_seconds=poll_interval_seconds,
+            poll_max_attempts=poll_max_attempts,
+        )
 
         if latest_status is None or latest_status.status not in {
             MatchRunStatus.completed,
@@ -412,16 +400,17 @@ def create_app(
                 include_archived=True,
             )
         }
-        applications: list[ApplicationRecord] = []
+        pending_records: list[ApplicationRecord] = []
         for match in latest_status.results:
             existing_record = existing_by_opportunity_id.get(match.external_job_id)
-            discovered_anchor = (
-                match.posted_at
-                or (
+            discovered_anchor = resolve_discovered_anchor(
+                posted_at=match.posted_at,
+                existing_discovered_at=(
                     existing_record.opportunity.discovered_at
                     if existing_record is not None
-                    else now
-                )
+                    else None
+                ),
+                now=now,
             )
             record = ApplicationRecord(
                 id=str(uuid5(NAMESPACE_URL, f"{user_id}:{match.external_job_id}")),
@@ -439,9 +428,13 @@ def create_app(
                     else ApplicationStatus.review
                 ),
             )
-            stored = fastapi_app.state.store.upsert_for_user(user_id, record)
-            applications.append(stored)
-            existing_by_opportunity_id[match.external_job_id] = stored
+            pending_records.append(record)
+            existing_by_opportunity_id[match.external_job_id] = record
+
+        applications = fastapi_app.state.store.upsert_many_for_user(
+            user_id,
+            pending_records,
+        )
 
         jobs_to_apply = [
             item

@@ -8,7 +8,12 @@ from sqlalchemy import delete
 
 from common.time import utc_now
 
-from cloud_automation.db import create_db_engine, create_session_factory, get_database_url
+from cloud_automation.db import (
+    create_db_engine,
+    create_session_factory,
+    ensure_runtime_indexes,
+    get_database_url,
+)
 from cloud_automation.db_models import ArtifactRefRow
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -17,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 def run() -> None:
     engine = create_db_engine(get_database_url())
+    ensure_runtime_indexes(engine)
     session_factory = create_session_factory(engine)
     interval = int(os.getenv("MAINTENANCE_INTERVAL_SECONDS", "3600"))
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -334,3 +336,28 @@ def test_blocked_non_timeout_reason_maps_application_to_failed(
     assert applications.status_code == 200
     app = applications.json()["applications"][0]
     assert app["status"] == "failed"
+
+
+def test_webhook_event_registration_is_atomic_under_race(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "race-main.db"
+    app = create_app(
+        database_url=f"sqlite+pysqlite:///{db_path}",
+        cloud_client=FakeCloudClient(),
+    )
+    payload = b'{"event":"race"}'
+
+    def _register() -> bool:
+        return app.state.orchestrator.register_webhook_event_if_new(
+            idempotency_key="idem-race-atomic",
+            event_type="apply.attempt.updated",
+            external_run_id="apply-run-race",
+            raw_body=payload,
+        )
+
+    with TestClient(app):
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(lambda _idx: _register(), range(20)))
+
+        assert sum(1 for item in results if item) == 1
