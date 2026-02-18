@@ -60,6 +60,7 @@ Callback requirements:
 ### Database
 
 - `DATABASE_URL` (default: `sqlite+pysqlite:///./agent_apply.db`)
+- `ENABLE_MAIN_SCHEMA_CREATE` (default: `true` in local/dev/test, `false` otherwise)
 
 ### Logging
 

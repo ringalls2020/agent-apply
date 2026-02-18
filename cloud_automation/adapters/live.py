@@ -24,9 +24,16 @@ def _parse_datetime(value: str | None) -> datetime | None:
 class GreenhouseLiveAdapter:
     source_name = "greenhouse"
 
-    def __init__(self, board_tokens: list[str], timeout_seconds: float = 20.0) -> None:
+    def __init__(
+        self,
+        board_tokens: list[str],
+        timeout_seconds: float = 20.0,
+        client: httpx.Client | None = None,
+    ) -> None:
         self.board_tokens = [token.strip() for token in board_tokens if token.strip()]
         self.timeout_seconds = timeout_seconds
+        self._owns_client = client is None
+        self.client = client or httpx.Client(timeout=self.timeout_seconds)
         self._cache: dict[str, dict[str, Any]] = {}
 
     def discover(self, seeds: list[str], cursor: str | None = None) -> list[str]:
@@ -35,7 +42,7 @@ class GreenhouseLiveAdapter:
         for board in self.board_tokens:
             url = f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs?content=true"
             try:
-                response = httpx.get(url, timeout=self.timeout_seconds)
+                response = self.client.get(url, timeout=self.timeout_seconds)
                 response.raise_for_status()
             except Exception:
                 logger.exception("greenhouse_discovery_failed", extra={"board": board})
@@ -72,13 +79,24 @@ class GreenhouseLiveAdapter:
     def next_cursor(self) -> str | None:
         return None
 
+    def close(self) -> None:
+        if self._owns_client:
+            self.client.close()
+
 
 class LeverLiveAdapter:
     source_name = "lever"
 
-    def __init__(self, companies: list[str], timeout_seconds: float = 20.0) -> None:
+    def __init__(
+        self,
+        companies: list[str],
+        timeout_seconds: float = 20.0,
+        client: httpx.Client | None = None,
+    ) -> None:
         self.companies = [company.strip() for company in companies if company.strip()]
         self.timeout_seconds = timeout_seconds
+        self._owns_client = client is None
+        self.client = client or httpx.Client(timeout=self.timeout_seconds)
         self._cache: dict[str, dict[str, Any]] = {}
 
     def discover(self, seeds: list[str], cursor: str | None = None) -> list[str]:
@@ -87,7 +105,7 @@ class LeverLiveAdapter:
         for company in self.companies:
             url = f"https://api.lever.co/v0/postings/{company}?mode=json"
             try:
-                response = httpx.get(url, timeout=self.timeout_seconds)
+                response = self.client.get(url, timeout=self.timeout_seconds)
                 response.raise_for_status()
             except Exception:
                 logger.exception("lever_discovery_failed", extra={"company": company})
@@ -127,13 +145,24 @@ class LeverLiveAdapter:
     def next_cursor(self) -> str | None:
         return None
 
+    def close(self) -> None:
+        if self._owns_client:
+            self.client.close()
+
 
 class SmartRecruitersLiveAdapter:
     source_name = "smartrecruiters"
 
-    def __init__(self, companies: list[str], timeout_seconds: float = 20.0) -> None:
+    def __init__(
+        self,
+        companies: list[str],
+        timeout_seconds: float = 20.0,
+        client: httpx.Client | None = None,
+    ) -> None:
         self.companies = [company.strip() for company in companies if company.strip()]
         self.timeout_seconds = timeout_seconds
+        self._owns_client = client is None
+        self.client = client or httpx.Client(timeout=self.timeout_seconds)
         self._cache: dict[str, dict[str, Any]] = {}
 
     def discover(self, seeds: list[str], cursor: str | None = None) -> list[str]:
@@ -142,7 +171,7 @@ class SmartRecruitersLiveAdapter:
         for company in self.companies:
             url = f"https://api.smartrecruiters.com/v1/companies/{company}/postings?limit=100&offset=0"
             try:
-                response = httpx.get(url, timeout=self.timeout_seconds)
+                response = self.client.get(url, timeout=self.timeout_seconds)
                 response.raise_for_status()
             except Exception:
                 logger.exception(
@@ -186,3 +215,7 @@ class SmartRecruitersLiveAdapter:
 
     def next_cursor(self) -> str | None:
         return None
+
+    def close(self) -> None:
+        if self._owns_client:
+            self.client.close()

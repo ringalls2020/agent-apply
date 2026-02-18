@@ -1,5 +1,6 @@
 from collections.abc import Iterator
 from datetime import timedelta
+import inspect
 import os
 
 import pytest
@@ -217,6 +218,20 @@ def test_health_endpoint_returns_generated_request_id_header(
     response = test_client.get("/health")
     assert response.status_code == 200
     assert response.headers.get("x-request-id")
+
+
+def test_agent_run_endpoint_is_async(test_client: TestClient) -> None:
+    route = next(
+        (
+            item
+            for item in test_client.app.router.routes
+            if getattr(item, "path", None) == "/v1/agent/run"
+            and "POST" in getattr(item, "methods", set())
+        ),
+        None,
+    )
+    assert route is not None
+    assert inspect.iscoroutinefunction(route.endpoint)
 
 
 def test_health_endpoint_reuses_incoming_request_id_header(

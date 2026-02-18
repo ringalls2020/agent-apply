@@ -72,6 +72,25 @@ alembic upgrade head
 .venv/bin/python -m pytest -q
 ```
 
+## Refactor Tracking
+
+The current refactor is being shipped in compatibility-safe slices.
+
+Non-breaking policy:
+
+- Keep existing HTTP/GraphQL contracts stable unless explicitly documented.
+- Keep legacy compatibility endpoints (`/agent/run`, `/applications`) as `410 Gone`.
+- Keep `/admin` gating behavior controlled by env + optional secret.
+
+Slice checkpoints:
+
+1. Stability/security hardening (`/v1/agent/run` async polling, atomic callback idempotency).
+2. Service module boundaries with compatibility shims.
+3. Cloud HTTP client lifecycle + callback retry/backoff + worker concurrency controls.
+4. UTC default cleanup + index additions + runtime cloud index ensure.
+5. Frontend GraphQL/frontend modularization without schema/operation breakage.
+6. Dependency upgrade sweep with full regression validation.
+
 ## Notes
 
 - Live discovery connectors are available for Greenhouse, Lever, and SmartRecruiters.

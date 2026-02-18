@@ -44,24 +44,6 @@ templates = Jinja2Templates(
     directory=str(Path(__file__).resolve().parent / "templates")
 )
 logger = logging.getLogger(__name__)
-_TRUE_VALUES = {"1", "true", "yes", "on"}
-
-
-def _parse_int_env(name: str, default: int) -> int:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    try:
-        return int(value)
-    except ValueError:
-        return default
-
-
-def _parse_bool_env(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in _TRUE_VALUES
 
 
 def create_app(
@@ -69,7 +51,8 @@ def create_app(
     cloud_client: CloudAutomationClient | None = None,
 ) -> FastAPI:
     configure_logging()
-    app_env = os.getenv("APP_ENV", os.getenv("ENV", "development")).strip().lower()
+    config = load_backend_config()
+    app_env = config.app_env
     require_profile_encryption = app_env not in {"dev", "development", "local", "test"}
     validate_profile_encryption_config(required=require_profile_encryption)
     resolved_database_url = get_database_url(database_url)
@@ -82,9 +65,10 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        logger.info("db_schema_initialization_started")
-        Base.metadata.create_all(bind=app.state.engine)
-        logger.info("db_schema_initialization_completed")
+        if app.state.enable_schema_create:
+            logger.info("db_schema_initialization_started")
+            Base.metadata.create_all(bind=app.state.engine)
+            logger.info("db_schema_initialization_completed")
         try:
             yield
         finally:
@@ -97,10 +81,12 @@ def create_app(
 
     fastapi_app = FastAPI(title="Agent Apply", version="0.2.0", lifespan=lifespan)
     fastapi_app.state.engine = engine
-    fastapi_app.state.job_listing_ttl_days = max(
-        1,
-        _parse_int_env("JOB_LISTING_TTL_DAYS", 21),
+    fastapi_app.state.enable_schema_create = config.enable_schema_create
+    fastapi_app.state.job_listing_ttl_days = config.job_listing_ttl_days
+    fastapi_app.state.agent_run_match_poll_interval_seconds = (
+        config.agent_run_match_poll_interval_seconds
     )
+    fastapi_app.state.agent_run_match_poll_max_attempts = config.agent_run_match_poll_max_attempts
 
     # Application records store shared by GraphQL and orchestration flows.
     fastapi_app.state.store = PostgresStore(
@@ -115,7 +101,7 @@ def create_app(
         store=fastapi_app.state.main_store,
         cloud_client=fastapi_app.state.cloud_client,
         application_store=fastapi_app.state.store,
-        default_daily_cap=_parse_int_env("DEFAULT_APPLY_DAILY_CAP", 25),
+        default_daily_cap=config.default_apply_daily_cap,
     )
 
     fastapi_app.state.callback_signing_secret = os.getenv(
@@ -128,7 +114,7 @@ def create_app(
     )
     fastapi_app.state.callback_audience = os.getenv("CLOUD_CALLBACK_AUDIENCE", "main-api")
     fastapi_app.state.callback_issuer = os.getenv("CLOUD_CALLBACK_ISSUER", "job-intel-api")
-    fastapi_app.state.callback_max_clock_skew_seconds = _parse_int_env(
+    fastapi_app.state.callback_max_clock_skew_seconds = parse_int_env(
         "CLOUD_CALLBACK_MAX_CLOCK_SKEW_SECONDS", 300
     )
     fastapi_app.state.required_client_subject = os.getenv(
@@ -142,13 +128,9 @@ def create_app(
         "USER_AUTH_AUDIENCE", "agent-apply-frontend"
     )
     fastapi_app.state.user_auth_token_ttl_seconds = max(
-        1, _parse_int_env("USER_AUTH_TOKEN_TTL_SECONDS", 7 * 24 * 60 * 60)
+        1, parse_int_env("USER_AUTH_TOKEN_TTL_SECONDS", 7 * 24 * 60 * 60)
     )
-    admin_enabled_default = app_env in {"dev", "development", "local", "test"}
-    fastapi_app.state.admin_enabled = _parse_bool_env(
-        "ENABLE_ADMIN_DASHBOARD",
-        default=admin_enabled_default,
-    )
+    fastapi_app.state.admin_enabled = config.admin_enabled
     fastapi_app.state.admin_secret = os.getenv("ADMIN_DASHBOARD_SECRET", "").strip()
 
     @fastapi_app.middleware("http")

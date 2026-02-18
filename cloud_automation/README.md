@@ -24,6 +24,7 @@ All `/v1/*` endpoints require service JWT auth.
 ### Database
 
 - `JOBS_DATABASE_URL` (default: `sqlite+pysqlite:///./jobs_intel.db`)
+- `ENABLE_CLOUD_SCHEMA_CREATE` (default: `true` in local/dev/test, `false` otherwise)
 
 ### Auth (main -> cloud)
 
@@ -58,6 +59,8 @@ If seed variables are empty in that mode, discovery returns no jobs.
 - `CLOUD_CALLBACK_AUDIENCE` (default: `main-api`)
 - `CLOUD_CALLBACK_SIGNING_SECRET` (default: falls back to `CLOUD_AUTOMATION_SIGNING_SECRET`)
 - `CLOUD_CALLBACK_SIGNATURE_SECRET` (default: same as callback signing secret)
+- `CALLBACK_RETRY_MAX_ATTEMPTS` (default: `3`)
+- `CALLBACK_RETRY_BASE_DELAY_MS` (default: `250`)
 
 ### Autonomous apply + LLM
 
@@ -73,6 +76,7 @@ If seed variables are empty in that mode, discovery returns no jobs.
 - `OPENAI_API_KEY` (optional; enables LLM-generated long-form answers)
 - `OPENAI_MODEL` (default: `gpt-4.1-mini`)
 - `OPENAI_TIMEOUT_SECONDS` (default: `20`)
+- `CLOUD_HTTP_TIMEOUT_SECONDS` (default: `20`; reused by callback emitter, OpenAI, and live adapters)
 
 ## Local run
 
@@ -88,6 +92,11 @@ Optional separate worker process entrypoints are included:
 - `python -m cloud_automation.workers.match_worker`
 - `python -m cloud_automation.workers.apply_worker`
 - `python -m cloud_automation.workers.maintenance_worker`
+
+Worker concurrency controls:
+
+- `MATCH_WORKER_CONCURRENCY` (default: `1`)
+- `APPLY_WORKER_CONCURRENCY` (default: `1`)
 
 ## Adapter interface
 

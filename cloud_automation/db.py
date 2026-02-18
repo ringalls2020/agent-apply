@@ -1,6 +1,6 @@
 import os
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -37,3 +37,24 @@ def create_session_factory(engine: Engine) -> sessionmaker:
         autocommit=False,
         expire_on_commit=False,
     )
+
+
+def ensure_runtime_indexes(engine: Engine) -> None:
+    inspector = inspect(engine)
+    statements_by_table = {
+        "match_runs": [
+            "CREATE INDEX IF NOT EXISTS ix_match_runs_status_started_at ON match_runs (status, started_at)"
+        ],
+        "apply_runs": [
+            "CREATE INDEX IF NOT EXISTS ix_apply_runs_status_started_at ON apply_runs (status, started_at)"
+        ],
+        "apply_attempts": [
+            "CREATE INDEX IF NOT EXISTS ix_apply_attempts_run_id ON apply_attempts (run_id)"
+        ],
+    }
+    with engine.begin() as connection:
+        for table_name, statements in statements_by_table.items():
+            if not inspector.has_table(table_name):
+                continue
+            for statement in statements:
+                connection.execute(text(statement))

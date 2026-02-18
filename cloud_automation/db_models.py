@@ -5,6 +5,8 @@ from datetime import datetime
 from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
+from common.time import utc_now
+
 from .db import Base
 
 
@@ -16,7 +18,7 @@ class JobSourceRow(Base):
     rate_limit_per_minute: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
     health_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
     last_cursor: Mapped[str | None] = mapped_column(Text)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class RawJobDocumentRow(Base):
@@ -26,7 +28,7 @@ class RawJobDocumentRow(Base):
     source_id: Mapped[str] = mapped_column(String(64), ForeignKey("job_sources.id"), nullable=False)
     url: Mapped[str] = mapped_column(Text, nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
-    fetched_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class NormalizedJobRow(Base):
@@ -46,7 +48,7 @@ class NormalizedJobRow(Base):
     source: Mapped[str] = mapped_column(String(64), nullable=False)
     posted_at: Mapped[datetime | None] = mapped_column(DateTime)
     description: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class JobFingerprintRow(Base):
@@ -56,7 +58,7 @@ class JobFingerprintRow(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
     canonical_job_id: Mapped[str] = mapped_column(String(64), ForeignKey("normalized_jobs.id"), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class CrawlRunRow(Base):
@@ -67,20 +69,23 @@ class CrawlRunRow(Base):
     source_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     discovered_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error: Mapped[str | None] = mapped_column(Text)
-    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
 class MatchRunRow(Base):
     __tablename__ = "match_runs"
+    __table_args__ = (
+        Index("ix_match_runs_status_started_at", "status", "started_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_ref: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     request_json: Mapped[str] = mapped_column(Text, nullable=False)
     error: Mapped[str | None] = mapped_column(Text)
-    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class MatchResultRow(Base):
@@ -102,18 +107,24 @@ class MatchResultRow(Base):
 
 class ApplyRunRow(Base):
     __tablename__ = "apply_runs"
+    __table_args__ = (
+        Index("ix_apply_runs_status_started_at", "status", "started_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_ref: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     request_json: Mapped[str] = mapped_column(Text, nullable=False)
     error: Mapped[str | None] = mapped_column(Text)
-    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class ApplyAttemptRow(Base):
     __tablename__ = "apply_attempts"
+    __table_args__ = (
+        Index("ix_apply_attempts_run_id", "run_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     run_id: Mapped[str] = mapped_column(String(64), ForeignKey("apply_runs.id"), nullable=False)
@@ -123,8 +134,8 @@ class ApplyAttemptRow(Base):
     failure_code: Mapped[str | None] = mapped_column(String(64))
     failure_reason: Mapped[str | None] = mapped_column(Text)
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class ArtifactRefRow(Base):
@@ -135,4 +146,4 @@ class ArtifactRefRow(Base):
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
     url: Mapped[str] = mapped_column(Text, nullable=False)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)

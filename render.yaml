@@ -43,6 +43,8 @@ services:
         value: "25"
       - key: JOB_LISTING_TTL_DAYS
         value: "21"
+      - key: ENABLE_MAIN_SCHEMA_CREATE
+        value: "false"
 
   - type: web
     name: job-intel-api
@@ -79,6 +81,14 @@ services:
         sync: false
       - key: JOB_LISTING_TTL_DAYS
         value: "21"
+      - key: ENABLE_CLOUD_SCHEMA_CREATE
+        value: "false"
+      - key: CLOUD_HTTP_TIMEOUT_SECONDS
+        value: "20"
+      - key: CALLBACK_RETRY_MAX_ATTEMPTS
+        value: "3"
+      - key: CALLBACK_RETRY_BASE_DELAY_MS
+        value: "250"
 
   - type: worker
     name: discovery-worker
@@ -97,6 +107,8 @@ services:
         value: "21600"
       - key: JOB_LISTING_TTL_DAYS
         value: "21"
+      - key: CLOUD_HTTP_TIMEOUT_SECONDS
+        value: "20"
 
   - type: worker
     name: apply-worker
@@ -123,6 +135,14 @@ services:
         sync: false
       - key: JOB_LISTING_TTL_DAYS
         value: "21"
+      - key: CLOUD_HTTP_TIMEOUT_SECONDS
+        value: "20"
+      - key: APPLY_WORKER_CONCURRENCY
+        value: "1"
+      - key: CALLBACK_RETRY_MAX_ATTEMPTS
+        value: "3"
+      - key: CALLBACK_RETRY_BASE_DELAY_MS
+        value: "250"
 
   - type: worker
     name: match-worker
@@ -139,6 +159,8 @@ services:
           property: connectionString
       - key: JOB_LISTING_TTL_DAYS
         value: "21"
+      - key: MATCH_WORKER_CONCURRENCY
+        value: "1"
 
   - type: worker
     name: maintenance-worker
