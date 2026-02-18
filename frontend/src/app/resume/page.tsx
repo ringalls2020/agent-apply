@@ -65,7 +65,7 @@ function ResumeInner() {
 
               try {
                 const text = await file.text();
-                await uploadResume({ variables: { filename: file.name, text } });
+                await uploadResume({ variables: { filename: file.name, resumeText: text } });
                 await refetch();
                 setNotice({ variant: "success", message: "Resume uploaded successfully." });
               } catch (err: unknown) {

@@ -1,41 +1,29 @@
-import { createSchema, createYoga } from "graphql-yoga";
+import { NextRequest, NextResponse } from "next/server";
 
-import { resolvers, type GraphQLContext } from "./resolvers";
-import { typeDefs } from "./schema";
+const rawBackendBaseUrl = process.env.BACKEND_API_BASE_URL ?? "http://127.0.0.1:8000";
+const backendBaseUrl = rawBackendBaseUrl.endsWith("/")
+  ? rawBackendBaseUrl.slice(0, -1)
+  : rawBackendBaseUrl;
 
-const schema = createSchema({
-  typeDefs,
-  resolvers,
-});
+export async function POST(request: NextRequest) {
+  const body = await request.text();
+  const authorization = request.headers.get("authorization");
 
-function getTokenFromRequest(request: Request): string | null {
-  const authHeader = request.headers.get("authorization");
-  if (authHeader) {
-    const bearerMatch = authHeader.match(/^Bearer\s+(.+)$/i);
-    if (bearerMatch?.[1]) return bearerMatch[1].trim();
-  }
+  const response = await fetch(`${backendBaseUrl}/graphql`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(authorization ? { authorization } : {}),
+    },
+    body,
+    cache: "no-store",
+  });
 
-  const cookieHeader = request.headers.get("cookie");
-  if (!cookieHeader) return null;
-
-  const tokenCookie = cookieHeader
-    .split(";")
-    .map((part) => part.trim())
-    .find((part) => part.startsWith("agent_apply_token="));
-
-  if (!tokenCookie) return null;
-  const [, token = ""] = tokenCookie.split("=");
-  return token ? decodeURIComponent(token) : null;
+  const payload = await response.text();
+  return new NextResponse(payload, {
+    status: response.status,
+    headers: {
+      "content-type": "application/json",
+    },
+  });
 }
-
-const yoga = createYoga<GraphQLContext>({
-  graphqlEndpoint: "/api/graphql",
-  schema,
-  fetchAPI: { Response },
-});
-
-async function handleGraphQL(request: Request): Promise<Response> {
-  return yoga.handleRequest(request, { token: getTokenFromRequest(request) });
-}
-
-export { handleGraphQL as GET, handleGraphQL as POST };

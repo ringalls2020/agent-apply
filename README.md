@@ -16,8 +16,8 @@ Monorepo for a two-plane job automation system:
   - Job discovery adapters + normalized job index
   - Async match runs and apply runs
   - Callback emitter back to main backend
-- **Legacy compatibility**
-  - `/agent/run` and `/applications` are deprecated (`410 Gone`); `/admin` remains available.
+- **Main API**
+  - GraphQL operations are served from `POST /graphql`; `/admin` remains available.
 
 ## Local setup
 

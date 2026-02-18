@@ -31,7 +31,7 @@ function SignupInner() {
           event.preventDefault();
           setError("");
           try {
-            const result = await signup({ variables: { name, email, password } });
+            const result = await signup({ variables: { fullName: name, email, password } });
             const token = result.data?.signup?.token;
             if (!token) {
               setError("Could not sign up.");

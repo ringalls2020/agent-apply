@@ -1,6 +1,6 @@
 # Frontend (Next.js + GraphQL)
 
-This frontend is a complete Next.js app with an integrated GraphQL BFF (`/api/graphql`) that proxies to the backend REST API, and UI flows for:
+This frontend is a complete Next.js app with an integrated GraphQL BFF (`/api/graphql`) that proxies to the backend GraphQL API, and UI flows for:
 
 - account signup/login,
 - user preferences management,

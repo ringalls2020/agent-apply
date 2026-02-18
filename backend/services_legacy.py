@@ -1409,7 +1409,7 @@ class CloudOrchestrationService:
         return MatchRunStartResponse(
             run_id=created.run_id,
             status=created.status,
-            status_url=f"/v1/users/{user_id}/match-runs/{created.run_id}",
+            status_url="/graphql",
         )
 
     def get_match_run(self, *, user_id: str, run_id: str) -> MatchRunStatusResponse:
@@ -1490,7 +1490,7 @@ class CloudOrchestrationService:
         return ApplyRunStartResponse(
             run_id=created.run_id,
             status=created.status,
-            status_url=f"/v1/users/{user_id}/apply-runs/{created.run_id}",
+            status_url="/graphql",
         )
 
     def get_apply_run(self, *, user_id: str, run_id: str) -> ApplyRunStatusResponse:

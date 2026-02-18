@@ -1,12 +1,12 @@
 import { gql } from "@apollo/client";
 
 export const SIGNUP = gql`
-  mutation Signup($name: String!, $email: String!, $password: String!) {
-    signup(name: $name, email: $email, password: $password) {
+  mutation Signup($fullName: String!, $email: String!, $password: String!) {
+    signup(fullName: $fullName, email: $email, password: $password) {
       token
       user {
         id
-        name
+        fullName
         email
       }
     }
@@ -19,7 +19,7 @@ export const LOGIN = gql`
       token
       user {
         id
-        name
+        fullName
         email
       }
     }
@@ -30,7 +30,7 @@ export const ME = gql`
   query Me {
     me {
       id
-      name
+      fullName
       email
       interests
       applicationsPerDay
@@ -43,7 +43,7 @@ export const ME = gql`
 export const UPDATE_PREFERENCES = gql`
   mutation UpdatePreferences($interests: [String!]!, $applicationsPerDay: Int!) {
     updatePreferences(interests: $interests, applicationsPerDay: $applicationsPerDay) {
-      id
+      userId
       interests
       applicationsPerDay
     }
@@ -51,10 +51,10 @@ export const UPDATE_PREFERENCES = gql`
 `;
 
 export const UPLOAD_RESUME = gql`
-  mutation UploadResume($filename: String!, $text: String!) {
-    uploadResume(filename: $filename, text: $text) {
+  mutation UploadResume($filename: String!, $resumeText: String!) {
+    uploadResume(filename: $filename, resumeText: $resumeText) {
       id
-      resumeFilename
+      filename
     }
   }
 `;
@@ -63,8 +63,9 @@ export const RUN_AGENT = gql`
   mutation RunAgent {
     runAgent {
       id
-      title
       status
+      title
+      company
       source
       jobUrl
     }
