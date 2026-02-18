@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+import sys
+import types
 
 import pytest
 from fastapi.testclient import TestClient
@@ -350,6 +352,137 @@ def test_apply_dev_review_mode_enabled_when_both_flags_set(
         executor = app.state.apply._build_executor()
         assert isinstance(executor, PlaywrightApplyExecutor)
         assert executor.dev_review_mode is True
+
+
+def test_apply_service_executes_with_async_playwright_without_sync_loop_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_AUTONOMOUS_BROWSING", "true")
+    monkeypatch.setenv("ENABLE_APPLY_DEV_REVIEW_MODE", "false")
+
+    class _FakeLocator:
+        async def count(self) -> int:
+            return 0
+
+        def nth(self, _index: int) -> "_FakeLocator":
+            return self
+
+        async def is_visible(self, **_kwargs) -> bool:
+            return False
+
+        async def evaluate(self, _script: str) -> str:
+            return "input"
+
+        async def select_option(self, **_kwargs) -> None:
+            return None
+
+        async def fill(self, _value: str, **_kwargs) -> None:
+            return None
+
+        async def inner_text(self, **_kwargs) -> str:
+            return ""
+
+    class _FakePage:
+        def __init__(self) -> None:
+            self.url = "about:blank"
+
+        def set_default_navigation_timeout(self, _value: int) -> None:
+            return None
+
+        def set_default_timeout(self, _value: int) -> None:
+            return None
+
+        async def goto(self, url: str, **_kwargs) -> None:
+            self.url = url
+
+        async def screenshot(self, **_kwargs) -> None:
+            return None
+
+        def locator(self, _selector: str) -> _FakeLocator:
+            return _FakeLocator()
+
+        def on(self, _event: str, _handler) -> None:
+            return None
+
+        def remove_listener(self, _event: str, _handler) -> None:
+            return None
+
+    class _FakeContext:
+        async def new_page(self) -> _FakePage:
+            return _FakePage()
+
+        async def close(self) -> None:
+            return None
+
+    class _FakeBrowser:
+        async def new_context(self) -> _FakeContext:
+            return _FakeContext()
+
+        async def close(self) -> None:
+            return None
+
+    class _FakeChromium:
+        async def launch(self, **_kwargs) -> _FakeBrowser:
+            return _FakeBrowser()
+
+    class _FakeAsyncPlaywright:
+        def __init__(self) -> None:
+            self.chromium = _FakeChromium()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:
+            del exc_type, exc, tb
+            return False
+
+    monkeypatch.setitem(
+        sys.modules,
+        "playwright.async_api",
+        types.SimpleNamespace(
+            async_playwright=lambda: _FakeAsyncPlaywright(),
+        ),
+    )
+
+    app = create_app(database_url="sqlite+pysqlite:///:memory:")
+    with TestClient(app) as client:
+        apply_start = client.post(
+            "/v1/apply-runs",
+            headers=_auth_headers(),
+            json={
+                "user_ref": "user-1",
+                "jobs": [
+                    {
+                        "external_job_id": "job-1",
+                        "title": "Backend Engineer",
+                        "company": "Acme",
+                        "apply_url": "https://example.com/jobs/1",
+                    }
+                ],
+                "profile_payload": {
+                    "full_name": "Jane Doe",
+                    "email": "jane@example.com",
+                    "application_profile": {
+                        "work_authorization": "Authorized to work in the United States",
+                        "requires_sponsorship": False,
+                        "willing_to_relocate": True,
+                    },
+                },
+                "daily_cap": 25,
+            },
+        )
+        assert apply_start.status_code == 200
+        apply_run_id = apply_start.json()["run_id"]
+
+        assert app.state.store.claim_apply_run(apply_run_id) is True
+        asyncio.run(app.state.apply.execute(apply_run_id, assume_claimed=True))
+
+        status = app.state.store.get_apply_run_status(apply_run_id)
+        assert status.status == "completed"
+        assert len(status.attempts) == 1
+        attempt = status.attempts[0]
+        assert attempt.status in {ApplyAttemptStatus.succeeded, ApplyAttemptStatus.submitted}
+        assert "sync api inside the asyncio loop" not in (attempt.failure_reason or "").lower()
 
 
 class _FakeHttpResponse:

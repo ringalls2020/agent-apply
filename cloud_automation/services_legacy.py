@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -744,7 +745,7 @@ class MatchingService:
 
 
 class ApplyExecutor(Protocol):
-    def complete_attempt(
+    async def complete_attempt(
         self,
         *,
         attempt: ApplyAttemptRecord,
@@ -989,7 +990,7 @@ class FormAnswerSynthesizer:
 
 
 class SimulatedApplyExecutor:
-    def complete_attempt(
+    async def complete_attempt(
         self,
         *,
         attempt: ApplyAttemptRecord,
@@ -1112,7 +1113,7 @@ class PlaywrightApplyExecutor:
         self.poll_interval_seconds = max(int(poll_interval_ms), 50) / 1000.0
         self.slow_mo_ms = max(int(slow_mo_ms), 0)
 
-    def complete_attempt(
+    async def complete_attempt(
         self,
         *,
         attempt: ApplyAttemptRecord,
@@ -1125,26 +1126,26 @@ class PlaywrightApplyExecutor:
         browser = None
         context = None
         try:
-            from playwright.sync_api import sync_playwright
+            from playwright.async_api import async_playwright
 
             launch_kwargs: dict[str, Any] = {"headless": self.headless}
             if self.dev_review_mode and self.slow_mo_ms > 0:
                 launch_kwargs["slow_mo"] = self.slow_mo_ms
 
-            with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(**launch_kwargs)
-                context = browser.new_context()
-                page = context.new_page()
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch(**launch_kwargs)
+                context = await browser.new_context()
+                page = await context.new_page()
                 page.set_default_navigation_timeout(self.nav_timeout_ms)
                 page.set_default_timeout(self.action_timeout_ms)
-                page.goto(attempt.job_url, wait_until="domcontentloaded")
-                self._fill_application_form(page=page, request=request)
+                await page.goto(attempt.job_url, wait_until="domcontentloaded")
+                await self._fill_application_form(page=page, request=request)
 
                 if self.capture_screenshots:
-                    page.screenshot(path=f"/tmp/{attempt.attempt_id}.png", full_page=True)
+                    await page.screenshot(path=f"/tmp/{attempt.attempt_id}.png", full_page=True)
 
                 terminal_attempt = (
-                    self._await_manual_submit(page=page, attempt=attempt)
+                    await self._await_manual_submit(page=page, attempt=attempt)
                     if self.dev_review_mode
                     else self._standard_terminal_attempt(attempt)
                 )
@@ -1170,10 +1171,10 @@ class PlaywrightApplyExecutor:
         finally:
             if context is not None:
                 with suppress(Exception):
-                    context.close()
+                    await context.close()
             if browser is not None:
                 with suppress(Exception):
-                    browser.close()
+                    await browser.close()
 
     @staticmethod
     def _application_profile(request: ApplyRunRequest) -> dict[str, Any]:
@@ -1265,10 +1266,10 @@ class PlaywrightApplyExecutor:
         }
         return values
 
-    def _fill_application_form(self, *, page: Any, request: ApplyRunRequest) -> None:
+    async def _fill_application_form(self, *, page: Any, request: ApplyRunRequest) -> None:
         values = self._build_fill_values(request)
 
-        self._fill_text_field(
+        await self._fill_text_field(
             page,
             selectors=[
                 "input[name*='first'][name*='name']",
@@ -1277,7 +1278,7 @@ class PlaywrightApplyExecutor:
             ],
             value=values["first_name"],
         )
-        self._fill_text_field(
+        await self._fill_text_field(
             page,
             selectors=[
                 "input[name*='last'][name*='name']",
@@ -1286,7 +1287,7 @@ class PlaywrightApplyExecutor:
             ],
             value=values["last_name"],
         )
-        self._fill_text_field(
+        await self._fill_text_field(
             page,
             selectors=[
                 "input[name='name']",
@@ -1296,7 +1297,7 @@ class PlaywrightApplyExecutor:
             ],
             value=values["full_name"],
         )
-        self._fill_text_field(
+        await self._fill_text_field(
             page,
             selectors=[
                 "input[type='email']",
@@ -1306,7 +1307,7 @@ class PlaywrightApplyExecutor:
             ],
             value=values["email"],
         )
-        self._fill_text_field(
+        await self._fill_text_field(
             page,
             selectors=[
                 "input[type='tel']",
@@ -1316,67 +1317,67 @@ class PlaywrightApplyExecutor:
             ],
             value=values["phone"],
         )
-        self._fill_text_field(
+        await self._fill_text_field(
             page,
             selectors=["input[name*='city']", "input[id*='city']", "input[autocomplete='address-level2']"],
             value=values["city"],
         )
-        self._fill_text_field(
+        await self._fill_text_field(
             page,
             selectors=["input[name='state']", "input[name*='state']", "input[autocomplete='address-level1']"],
             value=values["state"],
         )
-        self._fill_text_field(
+        await self._fill_text_field(
             page,
             selectors=["input[name*='country']", "input[id*='country']"],
             value=values["country"],
         )
-        self._fill_text_field(
+        await self._fill_text_field(
             page,
             selectors=["input[name*='linkedin']", "input[id*='linkedin']"],
             value=values["linkedin"],
         )
-        self._fill_text_field(
+        await self._fill_text_field(
             page,
             selectors=["input[name*='github']", "input[id*='github']"],
             value=values["github"],
         )
-        self._fill_text_field(
+        await self._fill_text_field(
             page,
             selectors=["input[name*='portfolio']", "input[id*='portfolio']", "input[name*='website']"],
             value=values["portfolio"],
         )
-        self._fill_text_field(
+        await self._fill_text_field(
             page,
             selectors=["input[name*='work_authorization']", "select[name*='work_authorization']"],
             value=values["work_authorization"],
         )
-        self._fill_boolean_field(
+        await self._fill_boolean_field(
             page,
             selectors=["input[name*='sponsor']", "select[name*='sponsor']", "input[name*='requires_sponsorship']"],
             value=bool(values["requires_sponsorship"]),
         )
-        self._fill_boolean_field(
+        await self._fill_boolean_field(
             page,
             selectors=["input[name*='relocate']", "select[name*='relocate']"],
             value=bool(values["willing_to_relocate"]),
         )
-        self._fill_text_field(
+        await self._fill_text_field(
             page,
             selectors=["input[name*='experience']", "input[id*='experience']"],
             value=values["years_experience"],
         )
-        self._fill_text_field(
+        await self._fill_text_field(
             page,
             selectors=["textarea[name*='cover']", "textarea[id*='cover']", "textarea[name*='letter']"],
             value=values["cover_letter"],
         )
 
-    def _fill_boolean_field(self, page: Any, *, selectors: list[str], value: bool) -> bool:
+    async def _fill_boolean_field(self, page: Any, *, selectors: list[str], value: bool) -> bool:
         normalized = "yes" if value else "no"
-        return self._fill_text_field(page, selectors=selectors, value=normalized)
+        return await self._fill_text_field(page, selectors=selectors, value=normalized)
 
-    def _fill_text_field(self, page: Any, *, selectors: list[str], value: Any) -> bool:
+    async def _fill_text_field(self, page: Any, *, selectors: list[str], value: Any) -> bool:
         text = str(value).strip() if value is not None else ""
         if not text:
             return False
@@ -1384,30 +1385,30 @@ class PlaywrightApplyExecutor:
         for selector in selectors:
             try:
                 locator = page.locator(selector)
-                count = locator.count()
+                count = await locator.count()
             except Exception:
                 continue
             for index in range(min(count, 4)):
                 candidate = locator.nth(index)
                 try:
-                    if not candidate.is_visible(timeout=200):
+                    if not await candidate.is_visible(timeout=200):
                         continue
-                    tag_name = str(candidate.evaluate("el => el.tagName.toLowerCase()"))
+                    tag_name = str(await candidate.evaluate("el => el.tagName.toLowerCase()"))
                     if tag_name == "select":
                         with suppress(Exception):
-                            candidate.select_option(label=text)
+                            await candidate.select_option(label=text)
                             return True
                         with suppress(Exception):
-                            candidate.select_option(value=text)
+                            await candidate.select_option(value=text)
                             return True
                         continue
-                    candidate.fill(text, timeout=self.action_timeout_ms)
+                    await candidate.fill(text, timeout=self.action_timeout_ms)
                     return True
                 except Exception:
                     continue
         return False
 
-    def _await_manual_submit(
+    async def _await_manual_submit(
         self,
         *,
         page: Any,
@@ -1434,7 +1435,7 @@ class PlaywrightApplyExecutor:
                 if (
                     submission_signals["network_submit"]
                     or self._is_submission_url(page.url)
-                    or self._has_confirmation_text(page)
+                    or await self._has_confirmation_text(page)
                 ):
                     return attempt.model_copy(
                         update={
@@ -1444,7 +1445,7 @@ class PlaywrightApplyExecutor:
                             "failure_reason": None,
                         }
                     )
-                time.sleep(self.poll_interval_seconds)
+                await asyncio.sleep(self.poll_interval_seconds)
         finally:
             with suppress(Exception):
                 page.remove_listener("request", _handle_request)
@@ -1464,11 +1465,11 @@ class PlaywrightApplyExecutor:
         lower_url = (url or "").lower()
         return any(token in lower_url for token in self._SUBMIT_URL_TOKENS)
 
-    def _has_confirmation_text(self, page: Any) -> bool:
+    async def _has_confirmation_text(self, page: Any) -> bool:
         text = ""
         with suppress(Exception):
             text = str(
-                page.locator("body").inner_text(
+                await page.locator("body").inner_text(
                     timeout=min(self.action_timeout_ms, 1500)
                 )
             )
@@ -1569,9 +1570,31 @@ class ApplyService:
                 filling = browsing.model_copy(update={"status": ApplyAttemptStatus.filling})
                 self.store.update_apply_attempt(run_id, filling)
 
-                terminal_attempt = executor.complete_attempt(
+                logger.info(
+                    "apply_attempt_execution_started",
+                    extra={
+                        "run_id": run_id,
+                        "attempt_id": filling.attempt_id,
+                        "job_url": filling.job_url,
+                        "executor_type": type(executor).__name__,
+                    },
+                )
+                attempt_started_at = time.perf_counter()
+                terminal_attempt = await executor.complete_attempt(
                     attempt=filling,
                     request=request,
+                )
+                attempt_duration_ms = round((time.perf_counter() - attempt_started_at) * 1000, 2)
+                logger.info(
+                    "apply_attempt_execution_completed",
+                    extra={
+                        "run_id": run_id,
+                        "attempt_id": filling.attempt_id,
+                        "job_url": filling.job_url,
+                        "executor_type": type(executor).__name__,
+                        "status": terminal_attempt.status.value,
+                        "duration_ms": attempt_duration_ms,
+                    },
                 )
                 self.store.update_apply_attempt(run_id, terminal_attempt)
 

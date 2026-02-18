@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
+from math import isfinite
 from typing import Any, Dict, List
 
 import httpx
@@ -12,13 +13,48 @@ from cloud_automation.models import NormalizedJob
 logger = logging.getLogger(__name__)
 
 
-def _parse_datetime(value: str | None) -> datetime | None:
-    if not value:
+def _parse_unix_epoch(value: int | float) -> datetime | None:
+    if isinstance(value, bool):
         return None
+    epoch_value = float(value)
+    if not isfinite(epoch_value):
+        return None
+
+    absolute_value = abs(epoch_value)
+    if absolute_value >= 1_000_000_000_000_000:
+        seconds = epoch_value / 1_000_000
+    elif absolute_value >= 1_000_000_000_000:
+        seconds = epoch_value / 1_000
+    else:
+        seconds = epoch_value
+
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
-    except ValueError:
+        return datetime.fromtimestamp(seconds, tz=timezone.utc).replace(tzinfo=None)
+    except (OverflowError, OSError, ValueError):
         return None
+
+
+def _parse_datetime(value: str | int | float | None) -> datetime | None:
+    if value is None or isinstance(value, bool):
+        return None
+
+    if isinstance(value, (int, float)):
+        return _parse_unix_epoch(value)
+
+    if not isinstance(value, str):
+        return None
+
+    raw = value.strip()
+    if not raw:
+        return None
+
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        try:
+            return _parse_unix_epoch(float(raw))
+        except ValueError:
+            return None
 
 
 class GreenhouseLiveAdapter:
