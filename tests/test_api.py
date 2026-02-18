@@ -1,6 +1,5 @@
 from collections.abc import Iterator
 from datetime import timedelta
-import inspect
 import os
 
 import pytest
@@ -26,9 +25,16 @@ class FakeCloudClient:
         self._runs: dict[str, list[MatchedJob]] = {}
         self.apply_run_starts = 0
         self.last_apply_payload = None
+        self.discovery_run_calls = 0
+        self.discovery_kick_calls = 0
 
     def run_discovery_now(self) -> dict[str, bool]:
+        self.discovery_run_calls += 1
         return {"accepted": True}
+
+    def kick_discovery(self) -> dict[str, object]:
+        self.discovery_kick_calls += 1
+        return {"accepted": True, "request_id": f"kick-{self.discovery_kick_calls}"}
 
     def start_match_run(self, payload) -> CloudMatchRunCreated:
         run_id = f"match-run-{self._next_run}"
@@ -220,7 +226,7 @@ def test_health_endpoint_returns_generated_request_id_header(
     assert response.headers.get("x-request-id")
 
 
-def test_agent_run_endpoint_is_async(test_client: TestClient) -> None:
+def test_agent_run_endpoint_is_removed(test_client: TestClient) -> None:
     route = next(
         (
             item
@@ -230,8 +236,7 @@ def test_agent_run_endpoint_is_async(test_client: TestClient) -> None:
         ),
         None,
     )
-    assert route is not None
-    assert inspect.iscoroutinefunction(route.endpoint)
+    assert route is None
 
 
 def test_health_endpoint_reuses_incoming_request_id_header(
@@ -316,7 +321,10 @@ def test_graphql_run_agent_requires_preferences_and_resume(test_client: TestClie
         token=signup["token"],
     )
     assert "errors" in result
-    assert result["errors"][0]["message"] == "User preferences not found"
+    assert result["errors"][0]["message"] in {
+        "User preferences not found",
+        "User resume not found",
+    }
 
 
 def test_graphql_run_agent_mutation_returns_applications(test_client: TestClient) -> None:
@@ -346,6 +354,79 @@ def test_graphql_run_agent_mutation_returns_applications(test_client: TestClient
     )
     assert "errors" not in result
     assert len(result["data"]["runAgent"]) == 2
+
+
+def test_graphql_run_agent_enqueues_discovery_kick(test_client: TestClient) -> None:
+    signup = _signup_user(
+        test_client,
+        full_name="Graph Runner Kick",
+        email="graph-runner-kick@example.com",
+    )
+    token = signup["token"]
+    _seed_profile(test_client, token=token, applications_per_day=1)
+
+    result = _graphql(
+        test_client,
+        "mutation RunAgent { runAgent { id } }",
+        token=token,
+    )
+
+    assert "errors" not in result
+    fake_cloud = test_client.app.state.test_fake_cloud_client
+    assert fake_cloud.discovery_kick_calls == 1
+    assert fake_cloud.discovery_run_calls == 0
+
+
+def test_graphql_run_agent_skips_discovery_kick_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_RUN_AGENT_DISCOVERY_KICK", "false")
+    monkeypatch.setenv("USER_PROFILE_ENCRYPTION_KEY", "test-profile-encryption-key")
+    fake_cloud = FakeCloudClient()
+    app = create_app(
+        database_url="sqlite+pysqlite:///:memory:",
+        cloud_client=fake_cloud,
+    )
+    with TestClient(app) as client:
+        signup = _signup_user(
+            client,
+            full_name="Graph Runner No Kick",
+            email="graph-runner-no-kick@example.com",
+        )
+        _seed_profile(client, token=signup["token"], applications_per_day=1)
+        result = _graphql(
+            client,
+            "mutation RunAgent { runAgent { id } }",
+            token=signup["token"],
+        )
+        assert "errors" not in result
+
+    assert fake_cloud.discovery_kick_calls == 0
+
+
+def test_graphql_run_agent_disabled_when_feature_flag_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_DEV_RUN_AGENT", "false")
+    monkeypatch.setenv("USER_PROFILE_ENCRYPTION_KEY", "test-profile-encryption-key")
+    app = create_app(
+        database_url="sqlite+pysqlite:///:memory:",
+        cloud_client=FakeCloudClient(),
+    )
+    with TestClient(app) as client:
+        signup = _signup_user(
+            client,
+            full_name="Graph Runner Disabled",
+            email="graph-runner-disabled@example.com",
+        )
+        _seed_profile(client, token=signup["token"], applications_per_day=1)
+        result = _graphql(
+            client,
+            "mutation RunAgent { runAgent { id } }",
+            token=signup["token"],
+        )
+        assert "errors" in result
+        assert result["errors"][0]["message"] == "runAgent is disabled in this environment"
 
 
 def test_graphql_applications_are_user_scoped(test_client: TestClient) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -111,6 +112,57 @@ class AtsTokenEvidenceRow(Base):
     method: Mapped[str] = mapped_column(String(32), nullable=False)
     evidence_url: Mapped[str] = mapped_column(Text, nullable=False)
     discovered_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
+class SeedManifestEntryRow(Base):
+    __tablename__ = "seed_manifest_entries"
+    __table_args__ = (
+        UniqueConstraint("careers_url"),
+        Index("ix_seed_manifest_entries_active", "is_active"),
+        Index("ix_seed_manifest_entries_source_page", "source_page_url"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    company: Mapped[str | None] = mapped_column(String(255))
+    careers_url: Mapped[str] = mapped_column(Text, nullable=False)
+    source_page_url: Mapped[str] = mapped_column(Text, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
+class SeedManifestBuildRunRow(Base):
+    __tablename__ = "seed_manifest_build_runs"
+    __table_args__ = (
+        Index("ix_seed_manifest_build_runs_started_at", "started_at"),
+        Index("ix_seed_manifest_build_runs_status", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    discovered_link_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    retained_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class DiscoveryRefreshRequestRow(Base):
+    __tablename__ = "discovery_refresh_requests"
+    __table_args__ = (
+        Index("ix_discovery_refresh_requests_status_created_at", "status", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    requested_by: Mapped[str | None] = mapped_column(String(128))
+    reason: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
 class NormalizedJobRow(Base):

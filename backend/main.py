@@ -88,6 +88,8 @@ def create_app(
         config.agent_run_match_poll_interval_seconds
     )
     fastapi_app.state.agent_run_match_poll_max_attempts = config.agent_run_match_poll_max_attempts
+    fastapi_app.state.enable_dev_run_agent = config.enable_dev_run_agent
+    fastapi_app.state.enable_run_agent_discovery_kick = config.enable_run_agent_discovery_kick
 
     # Application records store shared by GraphQL and orchestration flows.
     fastapi_app.state.store = PostgresStore(

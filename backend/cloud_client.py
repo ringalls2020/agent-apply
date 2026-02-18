@@ -105,6 +105,9 @@ class CloudAutomationClient:
     def run_discovery_now(self) -> Dict[str, Any]:
         return self._request(method="POST", path="/v1/discovery/run")
 
+    def kick_discovery(self) -> Dict[str, Any]:
+        return self._request(method="POST", path="/v1/discovery/kick")
+
     def get_match_run(self, run_id: str) -> CloudMatchRunStatus:
         body = self._request(method="GET", path=f"/v1/match-runs/{run_id}")
         return CloudMatchRunStatus.model_validate(body)

@@ -23,7 +23,7 @@ class DiscoveryCoordinator:
         self.method_a = DiscoveryPipeline(store=store, http_client=http_client)
         self.registry = TokenRegistryCoordinator(store=store, http_client=http_client)
 
-    def run_discovery_once(self) -> None:
+    def run_discovery_once(self) -> bool:
         crawl_id = self.store.create_crawl_run(source_count=3)
         discovered_count = 0
         try:
@@ -44,6 +44,7 @@ class DiscoveryCoordinator:
                 discovered_count=discovered_count,
                 error=None,
             )
+            return True
         except Exception as exc:
             logger.exception("method_a_discovery_failed", extra={"crawl_id": crawl_id})
             self.store.finalize_crawl_run(
@@ -51,6 +52,7 @@ class DiscoveryCoordinator:
                 discovered_count=discovered_count,
                 error=str(exc),
             )
+            return False
 
 
 class CommonCrawlCoordinator:
@@ -64,7 +66,7 @@ class CommonCrawlCoordinator:
         self.method_b = CommonCrawlPipeline(store=store, http_client=http_client)
         self.registry = TokenRegistryCoordinator(store=store, http_client=http_client)
 
-    def run_common_crawl_once(self) -> None:
+    def run_common_crawl_once(self) -> bool:
         crawl_id = self.store.create_crawl_run(source_count=1)
         discovered_count = 0
         try:
@@ -83,6 +85,7 @@ class CommonCrawlCoordinator:
                 discovered_count=discovered_count,
                 error=None,
             )
+            return True
         except Exception as exc:
             logger.exception("method_b_common_crawl_failed", extra={"crawl_id": crawl_id})
             self.store.finalize_crawl_run(
@@ -90,3 +93,4 @@ class CommonCrawlCoordinator:
                 discovered_count=discovered_count,
                 error=str(exc),
             )
+            return False

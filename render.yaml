@@ -41,6 +41,10 @@ services:
         value: job-intel-api
       - key: DEFAULT_APPLY_DAILY_CAP
         value: "25"
+      - key: ENABLE_DEV_RUN_AGENT
+        value: "false"
+      - key: ENABLE_RUN_AGENT_DISCOVERY_KICK
+        value: "false"
       - key: JOB_LISTING_TTL_DAYS
         value: "21"
       - key: ENABLE_MAIN_SCHEMA_CREATE
@@ -72,6 +76,24 @@ services:
       - key: ENABLE_EMBEDDED_DISCOVERY_LOOP
         value: "false"
       - key: SEED_MANIFEST_URLS
+        value: https://job-intel-api.onrender.com/internal/seed-manifests/companies.json
+      - key: SEED_SOURCE_PAGE_URLS
+        value: https://remoteintech.company/companies/,https://remoteintech.company/browse/worldwide/,https://remoteintech.company/browse/americas/,https://remoteintech.company/browse/europe/,https://remoteintech.company/browse/fully-remote/,https://remoteintech.company/browse/remote-first/,https://remoteintech.company/browse/remote-friendly/,https://remoteintech.company/browse/hybrid/,https://remoteintech.company/browse/python/,https://remoteintech.company/browse/javascript/
+      - key: SEED_MANIFEST_BUILD_INTERVAL_SECONDS
+        value: "86400"
+      - key: SEED_MANIFEST_MAX_RETRIES
+        value: "3"
+      - key: SEED_MANIFEST_TIMEOUT_SECONDS
+        value: "20"
+      - key: SEED_MANIFEST_REQUIRE_SERVICE_JWT
+        value: "true"
+      - key: SEED_MANIFEST_ALLOWED_ISSUERS
+        value: main-api,job-intel-api
+      - key: SEED_MANIFEST_SERVICE_ISSUER
+        value: job-intel-api
+      - key: SEED_MANIFEST_SERVICE_AUDIENCE
+        value: job-intel-api
+      - key: SEED_MANIFEST_SERVICE_SIGNING_SECRET
         sync: false
       - key: DISCOVERY_USER_AGENT
         value: agent-apply-discovery-bot/1.0
@@ -128,6 +150,14 @@ services:
       - key: DISCOVERY_INTERVAL_SECONDS
         value: "21600"
       - key: SEED_MANIFEST_URLS
+        value: https://job-intel-api.onrender.com/internal/seed-manifests/companies.json
+      - key: SEED_MANIFEST_REQUIRE_SERVICE_JWT
+        value: "true"
+      - key: SEED_MANIFEST_SERVICE_ISSUER
+        value: job-intel-api
+      - key: SEED_MANIFEST_SERVICE_AUDIENCE
+        value: job-intel-api
+      - key: SEED_MANIFEST_SERVICE_SIGNING_SECRET
         sync: false
       - key: DISCOVERY_USER_AGENT
         value: agent-apply-discovery-bot/1.0
@@ -143,6 +173,42 @@ services:
         value: "24"
       - key: JOB_LISTING_TTL_DAYS
         value: "21"
+      - key: CLOUD_HTTP_TIMEOUT_SECONDS
+        value: "20"
+      - key: DISCOVERY_WORKER_LOOP_SLEEP_SECONDS
+        value: "15"
+
+  - type: worker
+    name: seed-manifest-worker
+    env: python
+    plan: starter
+    region: oregon
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m cloud_automation.workers.seed_manifest_worker
+    envVars:
+      - key: JOBS_DATABASE_URL
+        fromDatabase:
+          name: jobs-postgres
+          property: connectionString
+      - key: SEED_SOURCE_PAGE_URLS
+        value: https://remoteintech.company/companies/,https://remoteintech.company/browse/worldwide/,https://remoteintech.company/browse/americas/,https://remoteintech.company/browse/europe/,https://remoteintech.company/browse/fully-remote/,https://remoteintech.company/browse/remote-first/,https://remoteintech.company/browse/remote-friendly/,https://remoteintech.company/browse/hybrid/,https://remoteintech.company/browse/python/,https://remoteintech.company/browse/javascript/
+      - key: SEED_MANIFEST_BUILD_INTERVAL_SECONDS
+        value: "86400"
+      - key: SEED_MANIFEST_MAX_RETRIES
+        value: "3"
+      - key: SEED_MANIFEST_TIMEOUT_SECONDS
+        value: "20"
+      - key: DISCOVERY_USER_AGENT
+        value: agent-apply-discovery-bot/1.0
+      - key: DISCOVERY_CONTACT_EMAIL
+        sync: false
+      - key: DISCOVERY_DEFAULT_CRAWL_DELAY_SECONDS
+        value: "2"
+      - key: DISCOVERY_MAX_RETRIES
+        value: "3"
+      - key: DISCOVERY_TIMEOUT_SECONDS
+        value: "20"
       - key: CLOUD_HTTP_TIMEOUT_SECONDS
         value: "20"
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import csv
+import io
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -10,6 +12,7 @@ from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from .db import (
     create_db_engine,
@@ -137,6 +140,16 @@ def create_app(database_url: str | None = None) -> FastAPI:
     app.state.required_client_subject = os.getenv(
         "CLOUD_AUTOMATION_REQUIRED_CLIENT_SUBJECT", ""
     ).strip()
+    app.state.seed_manifest_require_service_jwt = (
+        os.getenv("SEED_MANIFEST_REQUIRE_SERVICE_JWT", "true").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+    allowed_issuers_raw = os.getenv("SEED_MANIFEST_ALLOWED_ISSUERS", "main-api,job-intel-api")
+    app.state.seed_manifest_allowed_issuers = {
+        item.strip()
+        for item in allowed_issuers_raw.split(",")
+        if item.strip()
+    }
 
     interval = os.getenv("DISCOVERY_INTERVAL_SECONDS", "21600")
     try:
@@ -198,7 +211,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
                 logger.exception("discovery_loop_iteration_failed")
             await asyncio.sleep(app.state.discovery_interval_seconds)
 
-    def authorize(request: Request) -> None:
+    def authorize(request: Request) -> dict:
         token = _extract_bearer(request.headers.get("authorization"))
         if app.state.required_client_subject:
             presented_subject = request.headers.get("x-client-cert-subject", "")
@@ -208,7 +221,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
                     detail="mTLS client subject mismatch",
                 )
         try:
-            verify_hs256_jwt(
+            claims = verify_hs256_jwt(
                 token=token,
                 secret=app.state.auth_secret,
                 audience=app.state.auth_audience,
@@ -219,6 +232,33 @@ def create_app(database_url: str | None = None) -> FastAPI:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"Invalid service token: {exc}",
             ) from exc
+        return claims
+
+    def authorize_seed_manifest(request: Request) -> dict:
+        if not app.state.seed_manifest_require_service_jwt:
+            return {}
+
+        token = _extract_bearer(request.headers.get("authorization"))
+        try:
+            claims = verify_hs256_jwt(
+                token=token,
+                secret=app.state.auth_secret,
+                audience=app.state.auth_audience,
+                issuer=None,
+            )
+        except SecurityError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Invalid service token: {exc}",
+            ) from exc
+
+        issuer = str(claims.get("iss", "")).strip()
+        if issuer not in app.state.seed_manifest_allowed_issuers:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Service token issuer not allowed for seed manifest access",
+            )
+        return claims
 
     @app.get("/health")
     async def health() -> dict:
@@ -229,6 +269,49 @@ def create_app(database_url: str | None = None) -> FastAPI:
         authorize(request)
         app.state.discovery.run_discovery_once()
         return {"accepted": True}
+
+    @app.post("/v1/discovery/kick")
+    async def kick_discovery(request: Request) -> dict:
+        claims = authorize(request)
+        request_id = app.state.store.enqueue_discovery_refresh_request(
+            requested_by=str(claims.get("sub") or claims.get("iss") or ""),
+            reason="api_kick",
+        )
+        return {"accepted": True, "request_id": request_id}
+
+    @app.get("/internal/seed-manifests/companies.json")
+    async def companies_seed_json(request: Request) -> JSONResponse:
+        authorize_seed_manifest(request)
+        rows = app.state.store.list_active_seed_manifest_entries()
+        payload = [
+            {
+                "company": row.company,
+                "careers_url": row.careers_url,
+                "source_page_url": row.source_page_url,
+            }
+            for row in rows
+        ]
+        return JSONResponse(payload)
+
+    @app.get("/internal/seed-manifests/companies.csv")
+    async def companies_seed_csv(request: Request) -> PlainTextResponse:
+        authorize_seed_manifest(request)
+        rows = app.state.store.list_active_seed_manifest_entries()
+        buffer = io.StringIO()
+        writer = csv.DictWriter(
+            buffer,
+            fieldnames=["company", "careers_url", "source_page_url"],
+        )
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(
+                {
+                    "company": row.company or "",
+                    "careers_url": row.careers_url,
+                    "source_page_url": row.source_page_url,
+                }
+            )
+        return PlainTextResponse(buffer.getvalue(), media_type="text/csv")
 
     @app.get("/v1/jobs/search", response_model=JobSearchResponse)
     async def search_jobs(

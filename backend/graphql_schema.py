@@ -277,6 +277,9 @@ def _build_auth_user_profile(request: Request, user_id: str):
 
 def _run_agent(request: Request) -> list[dict]:
     app = request.app
+    if not bool(getattr(app.state, "enable_dev_run_agent", False)):
+        raise GraphQLError("runAgent is disabled in this environment")
+
     user_id = authenticated_user_id_from_request(request)
     preferences = app.state.main_store.get_preferences(user_id)
     if preferences is None or not preferences.interests:
@@ -292,10 +295,11 @@ def _run_agent(request: Request) -> list[dict]:
     poll_interval_seconds = float(os.getenv("AGENT_RUN_MATCH_POLL_INTERVAL_SECONDS", "0.5"))
     poll_max_attempts = max(1, int(os.getenv("AGENT_RUN_MATCH_POLL_MAX_ATTEMPTS", "40")))
 
-    try:
-        app.state.cloud_client.run_discovery_now()
-    except CloudClientError:
-        pass
+    if bool(getattr(app.state, "enable_run_agent_discovery_kick", False)):
+        try:
+            app.state.cloud_client.kick_discovery()
+        except CloudClientError:
+            pass
 
     started = app.state.orchestrator.start_match_run(
         user_id=user_id,

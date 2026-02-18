@@ -5,13 +5,14 @@ from datetime import timedelta
 from typing import Iterable
 from urllib.parse import urlsplit
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, update
 
 from common.time import utc_now
 
 from ..db_models import (
     AtsTokenEvidenceRow,
     AtsTokenRow,
+    DiscoveryRefreshRequestRow,
     DiscoverySeedRow,
     DomainRobotsCacheRow,
     JobFingerprintRow,
@@ -19,6 +20,8 @@ from ..db_models import (
     JobSourceRow,
     NormalizedJobRow,
     RawJobDocumentRow,
+    SeedManifestBuildRunRow,
+    SeedManifestEntryRow,
 )
 from ..models import NormalizedJob
 from ..services_legacy import JobIntelStore as LegacyJobIntelStore
@@ -397,3 +400,155 @@ class JobIntelStore(LegacyJobIntelStore):
         for token_list in providers.values():
             token_list.sort()
         return providers
+
+    def create_seed_manifest_build_run(self, *, source_count: int) -> str:
+        run_id = str(uuid.uuid4())
+        with self._session_factory() as session:
+            session.add(
+                SeedManifestBuildRunRow(
+                    id=run_id,
+                    status="running",
+                    source_count=max(source_count, 0),
+                    discovered_link_count=0,
+                    retained_count=0,
+                    started_at=utc_now(),
+                )
+            )
+            session.commit()
+        return run_id
+
+    def finalize_seed_manifest_build_run(
+        self,
+        *,
+        run_id: str,
+        discovered_link_count: int,
+        retained_count: int,
+        error: str | None = None,
+    ) -> None:
+        with self._session_factory() as session:
+            row = session.get(SeedManifestBuildRunRow, run_id)
+            if row is None:
+                return
+            row.discovered_link_count = max(discovered_link_count, 0)
+            row.retained_count = max(retained_count, 0)
+            row.status = "failed" if error else "completed"
+            row.error = error
+            row.completed_at = utc_now()
+            session.commit()
+
+    def replace_seed_manifest_entries(
+        self,
+        *,
+        entries: Iterable[tuple[str | None, str, str]],
+    ) -> int:
+        now = utc_now()
+        normalized_entries: dict[str, tuple[str | None, str, str]] = {}
+        for company, careers_url, source_page_url in entries:
+            careers_url_clean = careers_url.strip()
+            source_page_clean = source_page_url.strip()
+            if not careers_url_clean or not source_page_clean:
+                continue
+            normalized_entries[careers_url_clean] = (company, careers_url_clean, source_page_clean)
+
+        with self._session_factory() as session:
+            session.execute(
+                update(SeedManifestEntryRow).values(is_active=False, updated_at=now)
+            )
+            for company, careers_url, source_page_url in normalized_entries.values():
+                normalized_company = (
+                    company.strip() if isinstance(company, str) and company.strip() else None
+                )
+                row = session.scalar(
+                    select(SeedManifestEntryRow).where(SeedManifestEntryRow.careers_url == careers_url)
+                )
+                if row is None:
+                    session.add(
+                        SeedManifestEntryRow(
+                            id=str(uuid.uuid4()),
+                            company=normalized_company,
+                            careers_url=careers_url,
+                            source_page_url=source_page_url,
+                            is_active=True,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                    )
+                else:
+                    row.company = normalized_company
+                    row.source_page_url = source_page_url
+                    row.is_active = True
+                    row.updated_at = now
+            session.commit()
+        return len(normalized_entries)
+
+    def list_active_seed_manifest_entries(self, *, limit: int = 20000) -> list[SeedManifestEntryRow]:
+        with self._session_factory() as session:
+            return session.scalars(
+                select(SeedManifestEntryRow)
+                .where(SeedManifestEntryRow.is_active.is_(True))
+                .order_by(SeedManifestEntryRow.careers_url.asc())
+                .limit(max(limit, 1))
+            ).all()
+
+    def enqueue_discovery_refresh_request(
+        self,
+        *,
+        requested_by: str | None,
+        reason: str | None = None,
+    ) -> str:
+        request_id = str(uuid.uuid4())
+        with self._session_factory() as session:
+            session.add(
+                DiscoveryRefreshRequestRow(
+                    id=request_id,
+                    status="queued",
+                    requested_by=requested_by,
+                    reason=reason,
+                    created_at=utc_now(),
+                    updated_at=utc_now(),
+                )
+            )
+            session.commit()
+        return request_id
+
+    def list_queued_discovery_refresh_ids(self, *, limit: int = 20) -> list[str]:
+        with self._session_factory() as session:
+            return session.scalars(
+                select(DiscoveryRefreshRequestRow.id)
+                .where(DiscoveryRefreshRequestRow.status == "queued")
+                .order_by(DiscoveryRefreshRequestRow.created_at.asc())
+                .limit(max(limit, 1))
+            ).all()
+
+    def claim_discovery_refresh_request(self, request_id: str) -> bool:
+        now = utc_now()
+        with self._session_factory() as session:
+            result = session.execute(
+                update(DiscoveryRefreshRequestRow)
+                .where(
+                    and_(
+                        DiscoveryRefreshRequestRow.id == request_id,
+                        DiscoveryRefreshRequestRow.status == "queued",
+                    )
+                )
+                .values(status="claimed", claimed_at=now, updated_at=now, error=None)
+            )
+            session.commit()
+            return bool(result.rowcount)
+
+    def finalize_discovery_refresh_request(
+        self,
+        *,
+        request_id: str,
+        error: str | None = None,
+    ) -> None:
+        now = utc_now()
+        with self._session_factory() as session:
+            row = session.get(DiscoveryRefreshRequestRow, request_id)
+            if row is None:
+                return
+            row.status = "failed" if error else "completed"
+            row.error = error
+            row.completed_at = now
+            row.updated_at = now
+            session.commit()

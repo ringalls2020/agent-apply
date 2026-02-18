@@ -13,6 +13,7 @@ from cloud_automation.db import Base, create_db_engine, create_session_factory
 from cloud_automation.db_models import (
     AtsTokenEvidenceRow,
     AtsTokenRow,
+    DiscoveryRefreshRequestRow,
     DiscoverySeedRow,
     JobIdentityRow,
     NormalizedJobRow,
@@ -20,6 +21,7 @@ from cloud_automation.db_models import (
 from cloud_automation.services import CommonCrawlCoordinator, DiscoveryCoordinator, JobIntelStore
 from cloud_automation.services.ats_token_utils import build_job_identity, extract_ats_tokens_from_text
 from cloud_automation.services.discovery_pipeline import DiscoveryPipeline
+from cloud_automation.services.seed_manifest_builder import SeedManifestBuilder
 from cloud_automation.services.token_registry import TokenRegistryCoordinator
 from cloud_automation.workers import job_dedupe_backfill
 
@@ -126,6 +128,33 @@ def test_token_upsert_deduplicates_and_preserves_evidence(store: JobIntelStore) 
         assert session.scalar(select(func.count()).select_from(AtsTokenEvidenceRow)) == 2
 
 
+def test_discovery_refresh_queue_claim_and_finalize(store: JobIntelStore) -> None:
+    first = store.enqueue_discovery_refresh_request(
+        requested_by="main-api",
+        reason="api_kick",
+    )
+    second = store.enqueue_discovery_refresh_request(
+        requested_by="job-intel-api",
+        reason="scheduled_refresh",
+    )
+
+    queued = store.list_queued_discovery_refresh_ids(limit=10)
+    assert queued == [first, second]
+    assert store.claim_discovery_refresh_request(first) is True
+    assert store.claim_discovery_refresh_request(first) is False
+
+    store.finalize_discovery_refresh_request(request_id=first, error=None)
+    store.finalize_discovery_refresh_request(request_id=second, error="boom")
+
+    with store._session_factory() as session:
+        first_row = session.get(DiscoveryRefreshRequestRow, first)
+        second_row = session.get(DiscoveryRefreshRequestRow, second)
+        assert first_row is not None
+        assert second_row is not None
+        assert first_row.status == "completed"
+        assert second_row.status == "failed"
+
+
 def test_token_validation_lifecycle(store: JobIntelStore) -> None:
     store.record_extracted_tokens(
         extracted_tokens=extract_ats_tokens_from_text(
@@ -175,6 +204,114 @@ def test_token_validation_lifecycle(store: JobIntelStore) -> None:
     assert stats["validated"] == 1
     assert stats["invalid"] == 1
     assert stats["pending"] == 1
+
+
+def test_seed_manifest_builder_extracts_filters_and_dedupes(
+    store: JobIntelStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "SEED_SOURCE_PAGE_URLS",
+        "https://remoteintech.company/companies/,https://remoteintech.company/browse/worldwide/",
+    )
+    monkeypatch.setenv("SEED_MANIFEST_MAX_RETRIES", "1")
+    monkeypatch.setenv("SEED_MANIFEST_TIMEOUT_SECONDS", "10")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url == "https://remoteintech.company/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nAllow: /\nCrawl-delay: 0\n")
+        if url == "https://remoteintech.company/companies/":
+            return httpx.Response(
+                200,
+                text="""
+                <a href="https://acme.example/careers?utm_source=remoteintech">Acme Careers</a>
+                <a href="https://www.linkedin.com/company/acme">LinkedIn</a>
+                <a href="https://remoteintech.company/browse/worldwide/">Internal nav</a>
+                """,
+            )
+        if url == "https://remoteintech.company/browse/worldwide/":
+            return httpx.Response(
+                200,
+                text="""
+                <a href="https://acme.example/careers/">Acme Jobs</a>
+                <a href="https://jobs.lever.co/beta">Beta hiring</a>
+                <a href="mailto:hello@example.com">Email</a>
+                """,
+            )
+        return httpx.Response(404)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    builder = SeedManifestBuilder(store=store, http_client=client)
+    discovered_count, retained_count = builder.run_build_once()
+    client.close()
+
+    assert discovered_count >= 2
+    assert retained_count == 2
+    active = store.list_active_seed_manifest_entries()
+    assert [row.careers_url for row in active] == [
+        "https://acme.example/careers",
+        "https://jobs.lever.co/beta",
+    ]
+
+
+def test_seed_manifest_builder_skips_source_when_robots_disallows(
+    store: JobIntelStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SEED_SOURCE_PAGE_URLS", "https://remoteintech.company/companies/")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://remoteintech.company/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nDisallow: /\n")
+        return httpx.Response(404)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    builder = SeedManifestBuilder(store=store, http_client=client)
+    discovered_count, retained_count = builder.run_build_once()
+    client.close()
+
+    assert discovered_count == 0
+    assert retained_count == 0
+    assert store.list_active_seed_manifest_entries() == []
+
+
+def test_method_a_manifest_fetch_failure_uses_cached_discovery_seeds(
+    store: JobIntelStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SEED_MANIFEST_URLS", "https://seed.test/companies.json")
+    monkeypatch.setenv("SEED_MANIFEST_REQUIRE_SERVICE_JWT", "false")
+    monkeypatch.setenv("DISCOVERY_MAX_RETRIES", "1")
+
+    store.upsert_discovery_seeds(
+        manifest_url="https://seed.test/companies.json",
+        seeds=[("Acme", "https://acme.example/careers")],
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url == "https://seed.test/companies.json":
+            return httpx.Response(503, text="temporarily unavailable")
+        if url == "https://acme.example/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nAllow: /\n")
+        if url == "https://acme.example/careers":
+            return httpx.Response(
+                200,
+                text='<script src="https://boards.greenhouse.io/embed/job_board/js?for=acme"></script>',
+            )
+        return httpx.Response(404)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    pipeline = DiscoveryPipeline(store=store, http_client=client)
+    extracted = pipeline.run_method_a()
+    client.close()
+
+    assert extracted == 1
+    with store._session_factory() as session:
+        tokens = session.scalars(select(AtsTokenRow).where(AtsTokenRow.provider == "greenhouse")).all()
+        assert len(tokens) == 1
+        assert tokens[0].token == "acme"
 
 
 def test_build_job_identity_canonical_keys() -> None:

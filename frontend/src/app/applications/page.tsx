@@ -70,6 +70,7 @@ type ApplySelectedApplicationsResponse = {
 };
 
 function ApplicationsInner() {
+  const runAgentEnabled = process.env.NEXT_PUBLIC_ENABLE_RUN_AGENT_DEV !== "false";
   const { isCheckingAuth, isAuthenticated } = useRequireAuth();
   const [error, setError] = useState("");
   const [notice, setNotice] = useState<{ variant: "success" | "error"; message: string } | null>(null);
@@ -492,19 +493,21 @@ function ApplicationsInner() {
               Review opportunities, click out for manual submission, or queue selected rows for autonomous apply.
             </p>
           </div>
-          <Button
-            loading={running || isPostRunRefreshing}
-            loadingText={isPostRunRefreshing ? "Refreshing results..." : "Running agent..."}
-            onClick={async () => {
-              try {
-                await triggerRunAgent();
-              } catch (err: unknown) {
-                setError(err instanceof Error ? err.message : "Could not run agent.");
-              }
-            }}
-          >
-            Run agent now
-          </Button>
+          {runAgentEnabled ? (
+            <Button
+              loading={running || isPostRunRefreshing}
+              loadingText={isPostRunRefreshing ? "Refreshing results..." : "Running agent..."}
+              onClick={async () => {
+                try {
+                  await triggerRunAgent();
+                } catch (err: unknown) {
+                  setError(err instanceof Error ? err.message : "Could not run agent.");
+                }
+              }}
+            >
+              Run agent now
+            </Button>
+          ) : null}
         </div>
 
         <ApplicationsBulkActions
@@ -552,7 +555,7 @@ function ApplicationsInner() {
               <EmptyState
                 title="No applications found"
                 description="Try widening filters or run the agent to discover new opportunities."
-                action={
+                action={runAgentEnabled ? (
                   <Button
                     loading={running || isPostRunRefreshing}
                     loadingText={isPostRunRefreshing ? "Refreshing results..." : "Running agent..."}
@@ -566,7 +569,7 @@ function ApplicationsInner() {
                   >
                     Run agent now
                   </Button>
-                }
+                ) : undefined}
               />
             }
           />

@@ -66,6 +66,17 @@ def ensure_runtime_indexes(engine: Engine) -> None:
         "ats_token_evidence": [
             "CREATE INDEX IF NOT EXISTS ix_ats_token_evidence_token_id ON ats_token_evidence (token_id)"
         ],
+        "seed_manifest_entries": [
+            "CREATE INDEX IF NOT EXISTS ix_seed_manifest_entries_active ON seed_manifest_entries (is_active)",
+            "CREATE INDEX IF NOT EXISTS ix_seed_manifest_entries_source_page ON seed_manifest_entries (source_page_url)",
+        ],
+        "seed_manifest_build_runs": [
+            "CREATE INDEX IF NOT EXISTS ix_seed_manifest_build_runs_started_at ON seed_manifest_build_runs (started_at)",
+            "CREATE INDEX IF NOT EXISTS ix_seed_manifest_build_runs_status ON seed_manifest_build_runs (status)",
+        ],
+        "discovery_refresh_requests": [
+            "CREATE INDEX IF NOT EXISTS ix_discovery_refresh_requests_status_created_at ON discovery_refresh_requests (status, created_at)",
+        ],
         "job_identities": [
             "CREATE INDEX IF NOT EXISTS ix_job_identities_canonical_job_id ON job_identities (canonical_job_id)",
             "CREATE INDEX IF NOT EXISTS ix_job_identities_provider_token ON job_identities (provider, provider_token)",

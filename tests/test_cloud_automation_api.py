@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 import cloud_automation.services_legacy as cloud_services_legacy
 from common.time import utc_now
-from cloud_automation.db_models import NormalizedJobRow
+from cloud_automation.db_models import DiscoveryRefreshRequestRow, NormalizedJobRow
 from cloud_automation.main import create_app
 from cloud_automation.models import ApplyAttemptCallbackPayload, ApplyAttemptRecord, ApplyAttemptStatus
 from cloud_automation.security import create_hs256_jwt
@@ -24,6 +24,84 @@ def _auth_headers() -> dict[str, str]:
         expires_in_seconds=300,
     )
     return {"authorization": f"Bearer {token}"}
+
+
+def _seed_manifest_headers(*, issuer: str = "job-intel-api") -> dict[str, str]:
+    token = create_hs256_jwt(
+        payload={"sub": issuer},
+        secret="dev-cloud-signing-secret",
+        issuer=issuer,
+        audience="job-intel-api",
+        expires_in_seconds=300,
+    )
+    return {"authorization": f"Bearer {token}"}
+
+
+def test_discovery_kick_enqueues_refresh_request() -> None:
+    app = create_app(database_url="sqlite+pysqlite:///:memory:")
+    with TestClient(app) as client:
+        response = client.post("/v1/discovery/kick", headers=_auth_headers())
+        assert response.status_code == 200
+        body = response.json()
+        assert body["accepted"] is True
+        request_id = body["request_id"]
+        assert isinstance(request_id, str) and request_id
+
+        with app.state.store._session_factory() as session:
+            row = session.get(DiscoveryRefreshRequestRow, request_id)
+            assert row is not None
+            assert row.status == "queued"
+            assert row.requested_by == "main-api"
+
+
+def test_internal_seed_manifest_endpoints_require_service_jwt() -> None:
+    app = create_app(database_url="sqlite+pysqlite:///:memory:")
+    with TestClient(app) as client:
+        missing_auth = client.get("/internal/seed-manifests/companies.json")
+        assert missing_auth.status_code == 401
+
+        wrong_issuer = client.get(
+            "/internal/seed-manifests/companies.json",
+            headers=_seed_manifest_headers(issuer="unauthorized-service"),
+        )
+        assert wrong_issuer.status_code == 401
+
+
+def test_internal_seed_manifest_endpoints_return_json_and_csv() -> None:
+    app = create_app(database_url="sqlite+pysqlite:///:memory:")
+    with TestClient(app) as client:
+        app.state.store.replace_seed_manifest_entries(
+            entries=[
+                (
+                    "Acme",
+                    "https://acme.example/careers",
+                    "https://remoteintech.company/companies/",
+                ),
+                (
+                    "Beta",
+                    "https://jobs.lever.co/beta",
+                    "https://remoteintech.company/browse/worldwide/",
+                ),
+            ]
+        )
+        json_response = client.get(
+            "/internal/seed-manifests/companies.json",
+            headers=_seed_manifest_headers(),
+        )
+        assert json_response.status_code == 200
+        payload = json_response.json()
+        assert len(payload) == 2
+        assert payload[0]["careers_url"] == "https://acme.example/careers"
+
+        csv_response = client.get(
+            "/internal/seed-manifests/companies.csv",
+            headers=_seed_manifest_headers(),
+        )
+        assert csv_response.status_code == 200
+        assert "text/csv" in csv_response.headers["content-type"]
+        csv_body = csv_response.text
+        assert "company,careers_url,source_page_url" in csv_body
+        assert "Acme,https://acme.example/careers,https://remoteintech.company/companies/" in csv_body
 
 
 def test_cloud_match_and_apply_run_lifecycle() -> None:

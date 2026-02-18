@@ -23,6 +23,9 @@ class FakeCloudClient:
     def run_discovery_now(self) -> dict[str, bool]:
         return {"accepted": True}
 
+    def kick_discovery(self) -> dict[str, object]:
+        return {"accepted": True, "request_id": "kick-test"}
+
 
 @pytest.fixture
 def test_client() -> Iterator[TestClient]:

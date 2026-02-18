@@ -27,12 +27,45 @@ def run() -> None:
     store = JobIntelStore(create_session_factory(engine))
     coordinator = DiscoveryCoordinator(store=store, http_client=http_client)
     interval = int(os.getenv("DISCOVERY_INTERVAL_SECONDS", "21600"))
+    loop_sleep_seconds = max(int(os.getenv("DISCOVERY_WORKER_LOOP_SLEEP_SECONDS", "15")), 1)
+    last_scheduled_run_at = 0.0
 
-    logger.info("discovery_worker_started", extra={"interval_seconds": interval})
+    logger.info(
+        "discovery_worker_started",
+        extra={"interval_seconds": interval, "loop_sleep_seconds": loop_sleep_seconds},
+    )
     try:
         while True:
-            coordinator.run_discovery_once()
-            time.sleep(max(interval, 60))
+            queued_ids = store.list_queued_discovery_refresh_ids(limit=20)
+            for request_id in queued_ids:
+                if not store.claim_discovery_refresh_request(request_id):
+                    continue
+                succeeded = coordinator.run_discovery_once()
+                if not succeeded:
+                    store.finalize_discovery_refresh_request(
+                        request_id=request_id,
+                        error="discovery_failed",
+                    )
+                    logger.error(
+                        "discovery_refresh_request_failed",
+                        extra={"request_id": request_id},
+                    )
+                else:
+                    store.finalize_discovery_refresh_request(
+                        request_id=request_id,
+                        error=None,
+                    )
+                    logger.info(
+                        "discovery_refresh_request_completed",
+                        extra={"request_id": request_id},
+                    )
+
+            now = time.monotonic()
+            if now - last_scheduled_run_at >= max(interval, 60):
+                coordinator.run_discovery_once()
+                last_scheduled_run_at = time.monotonic()
+
+            time.sleep(loop_sleep_seconds)
     finally:
         http_client.close()
 

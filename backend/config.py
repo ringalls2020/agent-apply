@@ -31,6 +31,8 @@ class BackendConfig:
     default_apply_daily_cap: int
     agent_run_match_poll_interval_seconds: float
     agent_run_match_poll_max_attempts: int
+    enable_dev_run_agent: bool
+    enable_run_agent_discovery_kick: bool
     admin_enabled: bool
     enable_schema_create: bool
 
@@ -43,6 +45,7 @@ def load_backend_config() -> BackendConfig:
         poll_interval_seconds = float(poll_interval_raw)
     except ValueError:
         poll_interval_seconds = 0.5
+    dev_like_env = app_env in {"dev", "development", "local", "test"}
 
     return BackendConfig(
         app_env=app_env,
@@ -51,6 +54,14 @@ def load_backend_config() -> BackendConfig:
         agent_run_match_poll_interval_seconds=max(0.05, poll_interval_seconds),
         agent_run_match_poll_max_attempts=max(
             1, parse_int_env("AGENT_RUN_MATCH_POLL_MAX_ATTEMPTS", 40)
+        ),
+        enable_dev_run_agent=parse_bool_env(
+            "ENABLE_DEV_RUN_AGENT",
+            default=dev_like_env,
+        ),
+        enable_run_agent_discovery_kick=parse_bool_env(
+            "ENABLE_RUN_AGENT_DISCOVERY_KICK",
+            default=dev_like_env,
         ),
         admin_enabled=parse_bool_env(
             "ENABLE_ADMIN_DASHBOARD",

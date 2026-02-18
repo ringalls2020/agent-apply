@@ -52,6 +52,12 @@ Cloud service docs: [cloud_automation/README.md](cloud_automation/README.md)
 Match/apply runs are enqueue-only at the API layer and are processed by workers
 (`match_worker`, `apply_worker`) for single-consumer execution.
 
+Token-first sourcing is also worker-driven:
+
+- `seed_manifest_worker` builds canonical JSON/CSV manifests from upstream source pages.
+- `discovery_worker` consumes async refresh kicks and periodic discovery cycles.
+- `common_crawl_worker` performs daily Method B token extraction.
+
 ## Run frontend
 
 ```bash
@@ -94,6 +100,7 @@ Slice checkpoints:
 ## Notes
 
 - Token-first discovery now uses:
+  - Seed manifest builder (`SEED_SOURCE_PAGE_URLS` -> internal JSON/CSV manifests)
   - Method A strict-robots crawler seeded by `SEED_MANIFEST_URLS`
   - Method B Common Crawl token extraction
   - validated ATS feed ingestion for Greenhouse/Lever/SmartRecruiters

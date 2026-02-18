@@ -12,11 +12,14 @@ Independent FastAPI service for:
 
 - `GET /health`
 - `POST /v1/discovery/run`
+- `POST /v1/discovery/kick`
 - `GET /v1/jobs/search`
 - `POST /v1/match-runs`
 - `GET /v1/match-runs/{run_id}`
 - `POST /v1/apply-runs`
 - `GET /v1/apply-runs/{run_id}`
+- `GET /internal/seed-manifests/companies.json` (service JWT protected)
+- `GET /internal/seed-manifests/companies.csv` (service JWT protected)
 
 All `/v1/*` endpoints require service JWT auth.
 
@@ -54,11 +57,21 @@ All `/v1/*` endpoints require service JWT auth.
 ### Token-first discovery (Method A + Method B)
 
 - `SEED_MANIFEST_URLS` (comma-separated HTTP URLs to JSON/CSV/newline seed manifests)
+- `SEED_SOURCE_PAGE_URLS` (comma-separated upstream HTML source pages; default is the 10 Remote In Tech pages)
+- `SEED_MANIFEST_BUILD_INTERVAL_SECONDS` (default: `86400`)
+- `SEED_MANIFEST_MAX_RETRIES` (default: `3`)
+- `SEED_MANIFEST_TIMEOUT_SECONDS` (default: `20`)
+- `SEED_MANIFEST_REQUIRE_SERVICE_JWT` (default: `true`)
+- `SEED_MANIFEST_ALLOWED_ISSUERS` (default: `main-api,job-intel-api`)
+- `SEED_MANIFEST_SERVICE_ISSUER` (default: `job-intel-api`)
+- `SEED_MANIFEST_SERVICE_AUDIENCE` (default: `job-intel-api`)
+- `SEED_MANIFEST_SERVICE_SIGNING_SECRET` (default: falls back to `CLOUD_AUTOMATION_SIGNING_SECRET`)
 - `DISCOVERY_USER_AGENT` (crawler user-agent; include contact channel)
 - `DISCOVERY_CONTACT_EMAIL` (optional contact appended to user-agent)
 - `DISCOVERY_DEFAULT_CRAWL_DELAY_SECONDS` (default: `2`)
 - `DISCOVERY_MAX_RETRIES` (default: `3`)
 - `DISCOVERY_TIMEOUT_SECONDS` (default: `20`)
+- `DISCOVERY_WORKER_LOOP_SLEEP_SECONDS` (default: `15`; queue poll sleep for `discovery_worker`)
 - `TOKEN_VALIDATION_RECHECK_HOURS` (default: `24`)
 - `COMMON_CRAWL_LOOKBACK_INDEXES` (default: `2`)
 - `COMMON_CRAWL_MAX_PAGES_PER_PATTERN` (default: `3`)
@@ -66,10 +79,17 @@ All `/v1/*` endpoints require service JWT auth.
 
 Discovery flow:
 
-1. Method A crawls company career pages from seed manifests with strict robots checks.
-2. Method B scans Common Crawl index pages for ATS token patterns.
-3. Tokens are validated against official ATS feeds.
-4. Only validated tokens are used for job ingestion.
+1. `seed_manifest_worker` builds canonical JSON/CSV manifests from upstream source pages.
+2. Method A crawls company career pages from seed manifests with strict robots checks.
+3. Method B scans Common Crawl index pages for ATS token patterns.
+4. Tokens are validated against official ATS feeds.
+5. Only validated tokens are used for job ingestion.
+
+Discovery refresh queue flow:
+
+1. `POST /v1/discovery/kick` writes a `queued` request.
+2. `discovery_worker` claims queue rows and runs discovery immediately.
+3. Periodic discovery cadence (`DISCOVERY_INTERVAL_SECONDS`) still runs independently.
 
 ### Callback emitter (cloud -> main)
 
@@ -108,6 +128,7 @@ uvicorn cloud_automation.main:app --reload --port 8100
 Optional separate worker process entrypoints are included:
 
 - `python -m cloud_automation.workers.discovery_worker`
+- `python -m cloud_automation.workers.seed_manifest_worker`
 - `python -m cloud_automation.workers.common_crawl_worker`
 - `python -m cloud_automation.workers.match_worker`
 - `python -m cloud_automation.workers.apply_worker`
@@ -123,6 +144,8 @@ Worker concurrency controls:
 
 - `ats_tokens` + `ats_token_evidence` store extracted token registry and provenance.
 - `discovery_seeds` + `domain_robots_cache` store seed inventory and robots policy cache.
+- `seed_manifest_entries` + `seed_manifest_build_runs` track upstream source extraction and published manifests.
+- `discovery_refresh_requests` stores async discovery kick queue requests.
 - `job_identities` provides canonical dedupe keys:
   - preferred: `provider:token:provider_job_id`
   - fallback: `provider:urlhash(normalized_apply_url)`

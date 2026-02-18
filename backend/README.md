@@ -89,6 +89,13 @@ Callback requirements:
 - `DEFAULT_APPLY_DAILY_CAP` (default: `25`)
 - `JOB_LISTING_TTL_DAYS` (default: `21`; listings with anchor time older than this are archived/hidden by default)
 
+### runAgent feature flags
+
+- `ENABLE_DEV_RUN_AGENT` (default: `true` in local/dev/test; `false` otherwise)
+- `ENABLE_RUN_AGENT_DISCOVERY_KICK` (default: `true` in local/dev/test; `false` otherwise)
+
+`runAgent` now enqueues cloud discovery refresh via `/v1/discovery/kick` (non-blocking) when enabled.
+
 ### User auth
 
 - `USER_AUTH_SIGNING_SECRET` (default: `dev-user-auth-secret`)

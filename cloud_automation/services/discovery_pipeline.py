@@ -15,6 +15,7 @@ import httpx
 
 from common.time import utc_now
 
+from ..security import create_hs256_jwt
 from .ats_token_utils import extract_ats_tokens_from_text
 from .job_store import JobIntelStore
 
@@ -43,6 +44,22 @@ class DiscoveryPipeline:
         self.store = store
         self.http_client = http_client
         self.seed_manifest_urls = _csv_env("SEED_MANIFEST_URLS")
+        self.seed_manifest_require_service_jwt = (
+            os.getenv("SEED_MANIFEST_REQUIRE_SERVICE_JWT", "true").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+        self.seed_manifest_service_issuer = os.getenv(
+            "SEED_MANIFEST_SERVICE_ISSUER",
+            os.getenv("CLOUD_AUTOMATION_SERVICE_ID", "job-intel-api"),
+        ).strip() or "job-intel-api"
+        self.seed_manifest_service_audience = os.getenv(
+            "SEED_MANIFEST_SERVICE_AUDIENCE",
+            os.getenv("CLOUD_AUTOMATION_EXPECTED_AUDIENCE", "job-intel-api"),
+        ).strip() or "job-intel-api"
+        self.seed_manifest_signing_secret = os.getenv(
+            "SEED_MANIFEST_SERVICE_SIGNING_SECRET",
+            os.getenv("CLOUD_AUTOMATION_SIGNING_SECRET", "dev-cloud-signing-secret"),
+        )
         self.timeout_seconds = float(os.getenv("DISCOVERY_TIMEOUT_SECONDS", "20"))
         self.max_retries = max(int(os.getenv("DISCOVERY_MAX_RETRIES", "3")), 1)
         self.default_crawl_delay_seconds = max(
@@ -64,24 +81,33 @@ class DiscoveryPipeline:
             logger.info("method_a_no_seed_manifests_configured")
             return 0
 
+        refreshed_seed_count = 0
         for manifest_url in self.seed_manifest_urls:
             seeds = self._fetch_manifest_seeds(manifest_url)
             if seeds:
                 self.store.upsert_discovery_seeds(manifest_url=manifest_url, seeds=seeds)
+                refreshed_seed_count += len(seeds)
 
         extracted_total = 0
         seeds = self.store.list_discovery_seeds()
+        if refreshed_seed_count == 0 and seeds:
+            logger.info(
+                "method_a_using_cached_discovery_seeds",
+                extra={"seed_count": len(seeds)},
+            )
         for seed in seeds:
             extracted_total += self._crawl_seed(seed)
         return extracted_total
 
     def _fetch_manifest_seeds(self, manifest_url: str) -> list[tuple[str | None, str]]:
+        headers = {
+            "user-agent": self.user_agent,
+            "accept": "application/json, text/csv, text/plain;q=0.9, */*;q=0.1",
+        }
+        headers.update(self._seed_manifest_auth_headers())
         response = self._get_with_backoff(
             manifest_url,
-            headers={
-                "user-agent": self.user_agent,
-                "accept": "application/json, text/csv, text/plain;q=0.9, */*;q=0.1",
-            },
+            headers=headers,
         )
         if response is None or response.status_code >= 400:
             logger.warning(
@@ -129,6 +155,21 @@ class DiscoveryPipeline:
         # Fallback: newline-delimited URLs.
         lines = [line.strip() for line in body.splitlines() if line.strip()]
         return [(None, line) for line in lines]
+
+    def _seed_manifest_auth_headers(self) -> dict[str, str]:
+        if not self.seed_manifest_require_service_jwt:
+            return {}
+        token = create_hs256_jwt(
+            payload={"sub": self.seed_manifest_service_issuer},
+            secret=self.seed_manifest_signing_secret,
+            issuer=self.seed_manifest_service_issuer,
+            audience=self.seed_manifest_service_audience,
+            expires_in_seconds=300,
+        )
+        return {
+            "authorization": f"Bearer {token}",
+            "x-service-id": self.seed_manifest_service_issuer,
+        }
 
     @staticmethod
     def _parse_csv_manifest(body: str) -> list[tuple[str | None, str]]:
