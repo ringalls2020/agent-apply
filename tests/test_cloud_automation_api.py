@@ -33,6 +33,25 @@ def test_cloud_match_and_apply_run_lifecycle() -> None:
         run_discovery = client.post("/v1/discovery/run", headers=_auth_headers())
         assert run_discovery.status_code == 200
 
+        # Token-first discovery requires external seed manifests; insert one listing
+        # explicitly for lifecycle coverage in this test.
+        with app.state.store._session_factory() as session:
+            session.add(
+                NormalizedJobRow(
+                    id="seeded-job-1",
+                    title="Backend Engineer",
+                    company="Acme",
+                    location="United States",
+                    salary=None,
+                    apply_url="https://boards.greenhouse.io/acme/jobs/123",
+                    source="greenhouse",
+                    posted_at=utc_now(),
+                    description="Backend Python Engineer",
+                    created_at=utc_now(),
+                )
+            )
+            session.commit()
+
         search = client.get(
             "/v1/jobs/search?q=engineer&location=United%20States&limit=5",
             headers=_auth_headers(),

@@ -5,11 +5,12 @@ import contextlib
 import logging
 import os
 from contextlib import asynccontextmanager
+from time import perf_counter
+from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, status
 
-from .adapters import build_configured_adapters
 from .db import (
     create_db_engine,
     create_session_factory,
@@ -17,6 +18,11 @@ from .db import (
     get_database_url,
 )
 from .db_models import Base
+from .logging_config import (
+    bind_request_logging_context,
+    configure_logging,
+    reset_request_logging_context,
+)
 from .models import (
     ApplyRunCreated,
     ApplyRunRequest,
@@ -27,7 +33,14 @@ from .models import (
     MatchRunStatusResponse,
 )
 from .security import SecurityError, verify_hs256_jwt
-from .services import ApplyService, CallbackEmitter, DiscoveryCoordinator, JobIntelStore, MatchingService
+from .services import (
+    ApplyService,
+    CallbackEmitter,
+    CommonCrawlCoordinator,
+    DiscoveryCoordinator,
+    JobIntelStore,
+    MatchingService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +61,8 @@ def _extract_bearer(auth_header: str | None) -> str:
 
 
 def create_app(database_url: str | None = None) -> FastAPI:
-    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+    configure_logging()
+    logger.info("cloud_app_initializing")
 
     engine = create_db_engine(get_database_url(database_url))
     session_factory = create_session_factory(engine)
@@ -62,7 +76,6 @@ def create_app(database_url: str | None = None) -> FastAPI:
     )
     http_timeout = float(os.getenv("CLOUD_HTTP_TIMEOUT_SECONDS", "20"))
     shared_http_client = httpx.Client(timeout=http_timeout)
-    configured_adapters = build_configured_adapters(http_client=shared_http_client)
     ttl_raw = os.getenv("JOB_LISTING_TTL_DAYS", "21")
     try:
         job_listing_ttl_days = max(int(ttl_raw), 1)
@@ -72,7 +85,9 @@ def create_app(database_url: str | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if app.state.enable_schema_create:
+            logger.info("cloud_db_schema_initialization_started")
             Base.metadata.create_all(bind=app.state.engine)
+            logger.info("cloud_db_schema_initialization_completed")
         ensure_runtime_indexes(app.state.engine)
         if app.state.enable_embedded_discovery_loop:
             app.state.discovery_task = asyncio.create_task(discovery_loop())
@@ -87,17 +102,14 @@ def create_app(database_url: str | None = None) -> FastAPI:
             close_apply = getattr(app.state.apply, "close", None)
             if callable(close_apply):
                 close_apply()
-            for adapter in app.state.adapters:
-                close_adapter = getattr(adapter, "close", None)
-                if callable(close_adapter):
-                    close_adapter()
             app.state.http_client.close()
+            logger.info("cloud_db_engine_disposal_started")
             app.state.engine.dispose()
+            logger.info("cloud_db_engine_disposal_completed")
 
     app = FastAPI(title="Job Intel API", version="0.1.0", lifespan=lifespan)
     app.state.engine = engine
     app.state.http_client = shared_http_client
-    app.state.adapters = configured_adapters
     app.state.enable_schema_create = enable_schema_create
     app.state.job_listing_ttl_days = job_listing_ttl_days
     app.state.store = JobIntelStore(
@@ -106,7 +118,11 @@ def create_app(database_url: str | None = None) -> FastAPI:
     )
     app.state.discovery = DiscoveryCoordinator(
         store=app.state.store,
-        adapters=app.state.adapters,
+        http_client=app.state.http_client,
+    )
+    app.state.common_crawl = CommonCrawlCoordinator(
+        store=app.state.store,
+        http_client=app.state.http_client,
     )
     app.state.matching = MatchingService(store=app.state.store)
     app.state.apply = ApplyService(
@@ -131,16 +147,48 @@ def create_app(database_url: str | None = None) -> FastAPI:
         os.getenv("ENABLE_EMBEDDED_DISCOVERY_LOOP", "false").strip().lower()
         in {"1", "true", "yes", "on"}
     )
-    if not configured_adapters:
-        logger.warning("discovery_adapters_not_configured")
-    else:
-        logger.info(
-            "discovery_adapters_configured",
-            extra={
-                "adapter_count": len(configured_adapters),
-                "sources": [adapter.source_name for adapter in configured_adapters],
-            },
+    logger.info("token_registry_discovery_enabled")
+    logger.info("cloud_app_initialized")
+
+    @app.middleware("http")
+    async def request_logging_middleware(request: Request, call_next):
+        request_id_header = request.headers.get("x-request-id")
+        request_id = request_id_header.strip() if request_id_header else str(uuid4())
+        if not request_id:
+            request_id = str(uuid4())
+
+        context_tokens = bind_request_logging_context(
+            request_id=request_id,
+            http_method=request.method,
+            http_path=request.url.path,
         )
+        request.state.request_id = request_id
+        started_at = perf_counter()
+
+        logger.info(
+            "request_started",
+            extra={"client_ip": request.client.host if request.client else None},
+        )
+
+        try:
+            response = await call_next(request)
+        except Exception:
+            duration_ms = round((perf_counter() - started_at) * 1000, 2)
+            logger.exception("request_failed", extra={"duration_ms": duration_ms})
+            raise
+        else:
+            duration_ms = round((perf_counter() - started_at) * 1000, 2)
+            response.headers["x-request-id"] = request_id
+            logger.info(
+                "request_completed",
+                extra={
+                    "status_code": response.status_code,
+                    "duration_ms": duration_ms,
+                },
+            )
+            return response
+        finally:
+            reset_request_logging_context(context_tokens)
 
     async def discovery_loop() -> None:
         while True:

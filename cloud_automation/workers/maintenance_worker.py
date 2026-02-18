@@ -15,12 +15,13 @@ from cloud_automation.db import (
     get_database_url,
 )
 from cloud_automation.db_models import ArtifactRefRow
+from cloud_automation.logging_config import configure_logging
 
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
 
 def run() -> None:
+    configure_logging()
     engine = create_db_engine(get_database_url())
     ensure_runtime_indexes(engine)
     session_factory = create_session_factory(engine)

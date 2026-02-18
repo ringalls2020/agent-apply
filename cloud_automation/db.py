@@ -51,6 +51,25 @@ def ensure_runtime_indexes(engine: Engine) -> None:
         "apply_attempts": [
             "CREATE INDEX IF NOT EXISTS ix_apply_attempts_run_id ON apply_attempts (run_id)"
         ],
+        "discovery_seeds": [
+            "CREATE INDEX IF NOT EXISTS ix_discovery_seeds_domain ON discovery_seeds (domain)",
+            "CREATE INDEX IF NOT EXISTS ix_discovery_seeds_status ON discovery_seeds (status)",
+        ],
+        "domain_robots_cache": [
+            "CREATE INDEX IF NOT EXISTS ix_domain_robots_cache_expires_at ON domain_robots_cache (expires_at)",
+            "CREATE INDEX IF NOT EXISTS ix_domain_robots_cache_status ON domain_robots_cache (status)",
+        ],
+        "ats_tokens": [
+            "CREATE INDEX IF NOT EXISTS ix_ats_tokens_provider_status ON ats_tokens (provider, status)",
+            "CREATE INDEX IF NOT EXISTS ix_ats_tokens_status_seen ON ats_tokens (status, last_seen_at)",
+        ],
+        "ats_token_evidence": [
+            "CREATE INDEX IF NOT EXISTS ix_ats_token_evidence_token_id ON ats_token_evidence (token_id)"
+        ],
+        "job_identities": [
+            "CREATE INDEX IF NOT EXISTS ix_job_identities_canonical_job_id ON job_identities (canonical_job_id)",
+            "CREATE INDEX IF NOT EXISTS ix_job_identities_provider_token ON job_identities (provider, provider_token)",
+        ],
     }
     with engine.begin() as connection:
         for table_name, statements in statements_by_table.items():

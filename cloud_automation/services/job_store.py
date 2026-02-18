@@ -1,0 +1,399 @@
+from __future__ import annotations
+
+import uuid
+from datetime import timedelta
+from typing import Iterable
+from urllib.parse import urlsplit
+
+from sqlalchemy import and_, or_, select
+
+from common.time import utc_now
+
+from ..db_models import (
+    AtsTokenEvidenceRow,
+    AtsTokenRow,
+    DiscoverySeedRow,
+    DomainRobotsCacheRow,
+    JobFingerprintRow,
+    JobIdentityRow,
+    JobSourceRow,
+    NormalizedJobRow,
+    RawJobDocumentRow,
+)
+from ..models import NormalizedJob
+from ..services_legacy import JobIntelStore as LegacyJobIntelStore
+from .ats_token_utils import ExtractedToken, build_job_identity
+
+
+class JobIntelStore(LegacyJobIntelStore):
+    def record_discovery_documents(
+        self,
+        *,
+        source_name: str,
+        discovered_urls: list[str],
+        raw_documents: dict[str, str],
+        normalized_jobs: list[NormalizedJob],
+        next_cursor: str | None,
+    ) -> None:
+        now = utc_now()
+        with self._session_factory() as session:
+            source = session.get(JobSourceRow, source_name)
+            if source is None:
+                source = JobSourceRow(id=source_name, health_status="ok")
+                session.add(source)
+
+            source.last_cursor = next_cursor
+            source.health_status = "ok"
+            source.updated_at = now
+
+            identity_cache: dict[str, JobIdentityRow] = {}
+            for url in discovered_urls:
+                if url not in raw_documents:
+                    continue
+                session.add(
+                    RawJobDocumentRow(
+                        id=str(uuid.uuid4()),
+                        source_id=source_name,
+                        url=url,
+                        body=raw_documents[url],
+                        fetched_at=now,
+                    )
+                )
+
+            for job in normalized_jobs:
+                identity = build_job_identity(
+                    source=job.source,
+                    apply_url=job.apply_url,
+                    external_job_id=job.id,
+                )
+                identity_row = identity_cache.get(identity.canonical_key)
+                if identity_row is None:
+                    identity_row = session.scalar(
+                        select(JobIdentityRow).where(JobIdentityRow.canonical_key == identity.canonical_key)
+                    )
+                    if identity_row is not None:
+                        identity_cache[identity.canonical_key] = identity_row
+
+                canonical_job_id: str
+                existing_job = None
+                if identity_row is not None:
+                    existing_job = session.get(NormalizedJobRow, identity_row.canonical_job_id)
+
+                if existing_job is None:
+                    existing_job = session.get(NormalizedJobRow, job.id)
+
+                if existing_job is None:
+                    session.add(
+                        NormalizedJobRow(
+                            id=job.id,
+                            title=job.title,
+                            company=job.company,
+                            location=job.location,
+                            salary=job.salary,
+                            apply_url=identity.normalized_apply_url,
+                            source=job.source,
+                            posted_at=job.posted_at,
+                            description=job.description,
+                            created_at=now,
+                        )
+                    )
+                    canonical_job_id = job.id
+                else:
+                    existing_job.title = job.title
+                    existing_job.company = job.company
+                    existing_job.location = job.location
+                    existing_job.salary = job.salary
+                    existing_job.apply_url = identity.normalized_apply_url
+                    existing_job.source = job.source
+                    existing_job.posted_at = job.posted_at
+                    existing_job.description = job.description
+                    canonical_job_id = existing_job.id
+
+                if identity_row is None:
+                    identity_row = JobIdentityRow(
+                        id=str(uuid.uuid4()),
+                        canonical_key=identity.canonical_key,
+                        canonical_job_id=canonical_job_id,
+                        provider=identity.provider,
+                        provider_token=identity.provider_token,
+                        provider_job_id=identity.provider_job_id,
+                        normalized_apply_url_hash=identity.normalized_apply_url_hash,
+                        first_seen_at=now,
+                        last_seen_at=now,
+                    )
+                    session.add(identity_row)
+                    identity_cache[identity.canonical_key] = identity_row
+                    session.flush()
+                else:
+                    identity_row.canonical_job_id = canonical_job_id
+                    identity_row.provider = identity.provider
+                    identity_row.provider_token = identity.provider_token
+                    identity_row.provider_job_id = identity.provider_job_id
+                    identity_row.normalized_apply_url_hash = identity.normalized_apply_url_hash
+                    identity_row.last_seen_at = now
+
+                # Maintain legacy fingerprint rows for compatibility with existing data.
+                fingerprint = self._job_fingerprint(job)
+                fingerprint_row = session.scalar(
+                    select(JobFingerprintRow).where(JobFingerprintRow.fingerprint == fingerprint)
+                )
+                if fingerprint_row is None:
+                    session.add(
+                        JobFingerprintRow(
+                            id=str(uuid.uuid4()),
+                            fingerprint=fingerprint,
+                            canonical_job_id=canonical_job_id,
+                            created_at=now,
+                        )
+                    )
+                else:
+                    fingerprint_row.canonical_job_id = canonical_job_id
+
+            session.commit()
+
+    def upsert_discovery_seeds(
+        self,
+        *,
+        manifest_url: str,
+        seeds: Iterable[tuple[str | None, str]],
+    ) -> int:
+        now = utc_now()
+        created_or_updated = 0
+        with self._session_factory() as session:
+            for company, careers_url in seeds:
+                normalized_url = careers_url.strip()
+                if not normalized_url:
+                    continue
+                domain = (urlsplit(normalized_url).hostname or "").lower()
+                if not domain:
+                    continue
+
+                row = session.scalar(
+                    select(DiscoverySeedRow).where(DiscoverySeedRow.careers_url == normalized_url)
+                )
+                if row is None:
+                    row = DiscoverySeedRow(
+                        id=str(uuid.uuid4()),
+                        company=company.strip() if isinstance(company, str) and company.strip() else None,
+                        careers_url=normalized_url,
+                        domain=domain,
+                        source_manifest_url=manifest_url,
+                        status="pending",
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    session.add(row)
+                else:
+                    row.company = (
+                        company.strip() if isinstance(company, str) and company.strip() else row.company
+                    )
+                    row.source_manifest_url = manifest_url
+                    row.updated_at = now
+                created_or_updated += 1
+            session.commit()
+        return created_or_updated
+
+    def list_discovery_seeds(self, *, limit: int = 2000) -> list[DiscoverySeedRow]:
+        with self._session_factory() as session:
+            return session.scalars(
+                select(DiscoverySeedRow)
+                .where(DiscoverySeedRow.status != "disabled")
+                .order_by(DiscoverySeedRow.updated_at.asc())
+                .limit(max(limit, 1))
+            ).all()
+
+    def mark_discovery_seed_result(
+        self,
+        *,
+        careers_url: str,
+        status: str,
+        etag: str | None = None,
+        last_modified: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        now = utc_now()
+        with self._session_factory() as session:
+            row = session.scalar(
+                select(DiscoverySeedRow).where(DiscoverySeedRow.careers_url == careers_url)
+            )
+            if row is None:
+                return
+            row.status = status
+            row.etag = etag
+            row.last_modified = last_modified
+            row.last_error = error
+            row.last_crawled_at = now
+            row.updated_at = now
+            session.commit()
+
+    def get_domain_robots_cache(self, *, domain: str) -> DomainRobotsCacheRow | None:
+        with self._session_factory() as session:
+            return session.get(DomainRobotsCacheRow, domain.lower())
+
+    def upsert_domain_robots_cache(
+        self,
+        *,
+        domain: str,
+        robots_url: str,
+        robots_txt: str,
+        crawl_delay_seconds: int | None,
+        status: str,
+        error: str | None,
+        ttl_seconds: int,
+    ) -> None:
+        now = utc_now()
+        expires_at = now + timedelta(seconds=max(ttl_seconds, 60))
+        with self._session_factory() as session:
+            row = session.get(DomainRobotsCacheRow, domain.lower())
+            if row is None:
+                row = DomainRobotsCacheRow(
+                    domain=domain.lower(),
+                    robots_url=robots_url,
+                    robots_txt=robots_txt,
+                    crawl_delay_seconds=crawl_delay_seconds,
+                    status=status,
+                    last_error=error,
+                    fetched_at=now,
+                    expires_at=expires_at,
+                )
+                session.add(row)
+            else:
+                row.robots_url = robots_url
+                row.robots_txt = robots_txt
+                row.crawl_delay_seconds = crawl_delay_seconds
+                row.status = status
+                row.last_error = error
+                row.fetched_at = now
+                row.expires_at = expires_at
+            session.commit()
+
+    def record_extracted_tokens(
+        self,
+        *,
+        extracted_tokens: Iterable[ExtractedToken],
+        method: str,
+        evidence_url: str,
+    ) -> int:
+        now = utc_now()
+        inserted = 0
+        with self._session_factory() as session:
+            for extracted in extracted_tokens:
+                row = session.scalar(
+                    select(AtsTokenRow).where(
+                        and_(
+                            AtsTokenRow.provider == extracted.provider,
+                            AtsTokenRow.token == extracted.token,
+                        )
+                    )
+                )
+                if row is None:
+                    row = AtsTokenRow(
+                        id=str(uuid.uuid4()),
+                        provider=extracted.provider,
+                        token=extracted.token,
+                        status="pending",
+                        discovered_method=method,
+                        first_seen_at=now,
+                        last_seen_at=now,
+                    )
+                    session.add(row)
+                    inserted += 1
+                else:
+                    row.last_seen_at = now
+                    discovered_methods = {
+                        item.strip()
+                        for item in row.discovered_method.split(",")
+                        if item.strip()
+                    }
+                    if method not in discovered_methods:
+                        discovered_methods.add(method)
+                        row.discovered_method = ",".join(sorted(discovered_methods))
+
+                evidence = session.scalar(
+                    select(AtsTokenEvidenceRow).where(
+                        and_(
+                            AtsTokenEvidenceRow.token_id == row.id,
+                            AtsTokenEvidenceRow.method == method,
+                            AtsTokenEvidenceRow.evidence_url == evidence_url,
+                        )
+                    )
+                )
+                if evidence is None:
+                    session.add(
+                        AtsTokenEvidenceRow(
+                            id=str(uuid.uuid4()),
+                            token_id=row.id,
+                            method=method,
+                            evidence_url=evidence_url,
+                            discovered_at=now,
+                        )
+                    )
+            session.commit()
+        return inserted
+
+    def list_tokens_for_validation(
+        self,
+        *,
+        recheck_hours: int,
+        limit: int = 1000,
+    ) -> list[AtsTokenRow]:
+        cutoff = utc_now() - timedelta(hours=max(recheck_hours, 1))
+        with self._session_factory() as session:
+            return session.scalars(
+                select(AtsTokenRow)
+                .where(
+                    or_(
+                        AtsTokenRow.status == "pending",
+                        AtsTokenRow.last_validated_at.is_(None),
+                        AtsTokenRow.last_validated_at <= cutoff,
+                    )
+                )
+                .order_by(AtsTokenRow.last_seen_at.desc())
+                .limit(max(limit, 1))
+            ).all()
+
+    def set_token_validation_result(
+        self,
+        *,
+        provider: str,
+        token: str,
+        status: str,
+        error: str | None = None,
+    ) -> None:
+        now = utc_now()
+        with self._session_factory() as session:
+            row = session.scalar(
+                select(AtsTokenRow).where(
+                    and_(AtsTokenRow.provider == provider, AtsTokenRow.token == token)
+                )
+            )
+            if row is None:
+                return
+            if status == "pending" and row.status == "validated":
+                row.status = "validated"
+            else:
+                row.status = status
+            row.last_validated_at = now
+            row.last_error = error
+            if status == "validated":
+                row.validated_at = now
+                row.last_error = None
+            session.commit()
+
+    def list_validated_tokens_by_provider(self) -> dict[str, list[str]]:
+        providers: dict[str, list[str]] = {
+            "greenhouse": [],
+            "lever": [],
+            "smartrecruiters": [],
+        }
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(AtsTokenRow).where(AtsTokenRow.status == "validated")
+            ).all()
+            for row in rows:
+                bucket = providers.setdefault(row.provider, [])
+                if row.token not in bucket:
+                    bucket.append(row.token)
+        for token_list in providers.values():
+            token_list.sort()
+        return providers
