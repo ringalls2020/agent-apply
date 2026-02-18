@@ -26,6 +26,7 @@ class FakeCloudClient:
         self._next_run = 1
         self._runs: dict[str, list[MatchedJob]] = {}
         self.apply_run_starts = 0
+        self.last_apply_payload = None
 
     def run_discovery_now(self) -> dict[str, bool]:
         return {"accepted": True}
@@ -67,7 +68,7 @@ class FakeCloudClient:
         )
 
     def start_apply_run(self, payload) -> CloudApplyRunCreated:
-        del payload
+        self.last_apply_payload = payload
         self.apply_run_starts += 1
         run_id = f"apply-run-{self.apply_run_starts}"
         return CloudApplyRunCreated(
@@ -834,6 +835,22 @@ def test_graphql_signup_and_me_flow(test_client: TestClient) -> None:
     assert me["data"]["me"]["email"] == "graphql@example.com"
 
 
+def test_graphql_endpoint_executes_schema_in_threadpool(monkeypatch: pytest.MonkeyPatch) -> None:
+    called = {"value": False}
+
+    async def fake_run_in_threadpool(fn, *args, **kwargs):
+        called["value"] = True
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr("backend.main.run_in_threadpool", fake_run_in_threadpool)
+    os.environ.setdefault("USER_PROFILE_ENCRYPTION_KEY", "test-profile-encryption-key")
+    app = create_app(database_url="sqlite+pysqlite:///:memory:", cloud_client=FakeCloudClient())
+    with TestClient(app) as client:
+        response = client.post("/graphql", json={"query": "query { __typename }"})
+    assert response.status_code == 200
+    assert called["value"] is True
+
+
 def test_graphql_run_agent_mutation_returns_applications(test_client: TestClient) -> None:
     signup_body = _signup_user(
         test_client,
@@ -862,3 +879,167 @@ def test_graphql_run_agent_mutation_returns_applications(test_client: TestClient
     )
     assert "errors" not in result
     assert len(result["data"]["runAgent"]) == 2
+
+
+def test_graphql_apply_selected_applications_deduplicates_ids(
+    test_client: TestClient,
+) -> None:
+    signup_body = _signup_user(
+        test_client,
+        full_name="Graph Apply Dedupe",
+        email="graph-apply-dedupe@example.com",
+    )
+    token = signup_body["token"]
+    user_id = signup_body["user"]["id"]
+    _seed_profile(test_client, user_id=user_id, token=token, applications_per_day=3)
+
+    run_result = _graphql(
+        test_client,
+        """
+        mutation RunAgent {
+          runAgent {
+            id
+          }
+        }
+        """,
+        token=token,
+    )
+    assert "errors" not in run_result
+    first_application_id = run_result["data"]["runAgent"][0]["id"]
+
+    apply_result = _graphql(
+        test_client,
+        """
+        mutation ApplySelected($applicationIds: [ID!]!) {
+          applySelectedApplications(applicationIds: $applicationIds) {
+            runId
+            acceptedApplicationIds
+            applications {
+              id
+              status
+            }
+            skipped {
+              applicationId
+              reason
+            }
+          }
+        }
+        """,
+        variables={"applicationIds": [first_application_id, first_application_id]},
+        token=token,
+    )
+
+    assert "errors" not in apply_result
+    payload = apply_result["data"]["applySelectedApplications"]
+    assert payload["acceptedApplicationIds"] == [first_application_id]
+    assert len(payload["applications"]) == 1
+    assert payload["applications"][0]["id"] == first_application_id
+    assert payload["applications"][0]["status"] == "applying"
+    assert payload["skipped"] == []
+
+    fake_cloud = test_client.app.state.test_fake_cloud_client
+    assert fake_cloud.apply_run_starts == 1
+    assert fake_cloud.last_apply_payload is not None
+    assert len(fake_cloud.last_apply_payload.jobs) == 1
+
+
+def test_graphql_mark_application_applied_rejects_archived_application(
+    test_client: TestClient,
+) -> None:
+    user = _signup_user(
+        test_client,
+        full_name="Graph Archive",
+        email="graph-archive@example.com",
+    )
+    token = user["token"]
+    user_id = user["user"]["id"]
+
+    archived = _seed_application_record(
+        test_client,
+        user_id=user_id,
+        app_id="archived-graphql-app",
+        opportunity_id="archived-graphql-job",
+        discovered_at_offset_days=45,
+    )
+
+    result = _graphql(
+        test_client,
+        """
+        mutation MarkApplied($applicationId: ID!) {
+          markApplicationApplied(applicationId: $applicationId) {
+            id
+            status
+          }
+        }
+        """,
+        {"applicationId": archived.id},
+        token=token,
+    )
+    assert "errors" in result
+    assert (
+        result["errors"][0]["message"]
+        == "Application is archived and cannot be updated"
+    )
+
+    archived_list = test_client.get(
+        "/v1/applications?include_archived=true",
+        headers=_auth_headers(token),
+    )
+    assert archived_list.status_code == 200
+    archived_item = next(
+        item
+        for item in archived_list.json()["applications"]
+        if item["id"] == archived.id
+    )
+    assert archived_item["status"] == "review"
+
+
+def test_graphql_mark_application_viewed_rejects_archived_application(
+    test_client: TestClient,
+) -> None:
+    user = _signup_user(
+        test_client,
+        full_name="Graph Archive Viewed",
+        email="graph-archive-viewed@example.com",
+    )
+    token = user["token"]
+    user_id = user["user"]["id"]
+
+    archived = _seed_application_record(
+        test_client,
+        user_id=user_id,
+        app_id="archived-graphql-viewed-app",
+        opportunity_id="archived-graphql-viewed-job",
+        discovered_at_offset_days=45,
+    )
+
+    result = _graphql(
+        test_client,
+        """
+        mutation MarkViewed($applicationId: ID!) {
+          markApplicationViewed(applicationId: $applicationId) {
+            id
+            status
+          }
+        }
+        """,
+        {"applicationId": archived.id},
+        token=token,
+    )
+    assert "errors" in result
+    assert (
+        result["errors"][0]["message"]
+        == "Application is archived and cannot be updated"
+    )
+
+    archived_list = test_client.get(
+        "/v1/applications?include_archived=true",
+        headers=_auth_headers(token),
+    )
+    assert archived_list.status_code == 200
+    archived_item = next(
+        item
+        for item in archived_list.json()["applications"]
+        if item["id"] == archived.id
+    )
+    assert archived_item["status"] == "review"

@@ -5,7 +5,7 @@ from time import sleep
 from uuid import NAMESPACE_URL, uuid5
 
 import graphene
-from fastapi import HTTPException, Request, status
+from fastapi import HTTPException, Request
 from graphql import GraphQLError
 
 from .auth import authenticated_user_id_from_request, create_user_access_token
@@ -515,9 +515,27 @@ class Mutation(graphene.ObjectType):
     def resolve_apply_selected_applications(self, info, application_ids):
         request = info.context["request"]
         user_id = authenticated_user_id_from_request(request)
+        normalized_ids: list[str] = []
+        seen_ids: set[str] = set()
+        for raw_id in application_ids:
+            normalized_id = str(raw_id).strip()
+            if not normalized_id or normalized_id in seen_ids:
+                continue
+            normalized_ids.append(normalized_id)
+            seen_ids.add(normalized_id)
+
+        if not normalized_ids:
+            return _to_dict(
+                BulkApplyResponse(
+                    accepted_application_ids=[],
+                    skipped=[],
+                    applications=[],
+                )
+            )
+
         existing = request.app.state.store.get_for_user_by_ids(
             user_id=user_id,
-            application_ids=application_ids,
+            application_ids=normalized_ids,
             include_archived=True,
         )
         existing_by_id = {application.id: application for application in existing}
@@ -526,7 +544,7 @@ class Mutation(graphene.ObjectType):
         accepted_jobs: list[ApplyTargetJob] = []
         skipped: list[BulkApplySkippedItem] = []
 
-        for application_id in application_ids:
+        for application_id in normalized_ids:
             application = existing_by_id.get(application_id)
             if application is None:
                 skipped.append(BulkApplySkippedItem(application_id=application_id, reason="application_not_found"))
@@ -557,7 +575,19 @@ class Mutation(graphene.ObjectType):
     def resolve_mark_application_viewed(self, info, application_id: str):
         request = info.context["request"]
         user_id = authenticated_user_id_from_request(request)
-        application = request.app.state.store.mark_viewed_for_user_application(user_id=user_id, application_id=application_id)
+        existing = request.app.state.store.get_for_user_by_ids(
+            user_id=user_id,
+            application_ids=[application_id],
+            include_archived=True,
+        )
+        if not existing:
+            raise GraphQLError("Application not found")
+        if existing[0].is_archived:
+            raise GraphQLError("Application is archived and cannot be updated")
+        application = request.app.state.store.mark_viewed_for_user_application(
+            user_id=user_id,
+            application_id=application_id,
+        )
         if application is None:
             raise GraphQLError("Application not found")
         return _to_dict(application)
@@ -565,7 +595,20 @@ class Mutation(graphene.ObjectType):
     def resolve_mark_application_applied(self, info, application_id: str):
         request = info.context["request"]
         user_id = authenticated_user_id_from_request(request)
-        application = request.app.state.store.mark_applied_for_user_application(user_id=user_id, application_id=application_id, submitted_at=utc_now())
+        existing = request.app.state.store.get_for_user_by_ids(
+            user_id=user_id,
+            application_ids=[application_id],
+            include_archived=True,
+        )
+        if not existing:
+            raise GraphQLError("Application not found")
+        if existing[0].is_archived:
+            raise GraphQLError("Application is archived and cannot be updated")
+        application = request.app.state.store.mark_applied_for_user_application(
+            user_id=user_id,
+            application_id=application_id,
+            submitted_at=utc_now(),
+        )
         if application is None:
             raise GraphQLError("Application not found")
         return _to_dict(application)

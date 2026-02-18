@@ -7,6 +7,7 @@ from time import perf_counter, sleep
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
@@ -258,12 +259,16 @@ def create_app(
     @fastapi_app.post("/graphql")
     async def graphql_endpoint(request: Request) -> JSONResponse:
         payload = await request.json()
-        result = graphql_schema.execute(
-            payload.get("query"),
-            variable_values=payload.get("variables"),
-            operation_name=payload.get("operationName"),
-            context_value={"request": request},
-        )
+
+        def _execute_graphql():
+            return graphql_schema.execute(
+                payload.get("query"),
+                variable_values=payload.get("variables"),
+                operation_name=payload.get("operationName"),
+                context_value={"request": request},
+            )
+
+        result = await run_in_threadpool(_execute_graphql)
         response_payload: dict[str, object] = {}
         if result.data is not None:
             response_payload["data"] = result.data
