@@ -273,7 +273,7 @@ function ProfileInner() {
                 <div>
                   <p className="text-sm font-semibold text-foreground">Enable autosubmit</p>
                   <p className="text-xs text-muted text-wrap-anywhere">
-                    When enabled, `/v1/agent/run` will trigger autonomous apply attempts immediately after matching.
+                    When enabled, running the GraphQL `runAgent` mutation triggers autonomous apply attempts immediately after matching.
                   </p>
                 </div>
               </label>

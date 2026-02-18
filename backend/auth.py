@@ -52,13 +52,3 @@ def authenticated_user_id_from_request(request: Request) -> str:
             detail="User auth token missing subject",
         )
     return user_id
-
-
-def require_user_id_match(request: Request, user_id: str) -> str:
-    authenticated_user_id = authenticated_user_id_from_request(request)
-    if authenticated_user_id != user_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cannot access another user's profile",
-        )
-    return authenticated_user_id
