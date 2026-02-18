@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from html.parser import HTMLParser
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
@@ -170,15 +171,41 @@ class SeedManifestBuilder:
         run_id = self.store.create_seed_manifest_build_run(source_count=len(self.source_page_urls))
         discovered_entries: dict[str, tuple[str | None, str, str]] = {}
         discovered_link_count = 0
+        logger.info(
+            "seed_manifest_build_started",
+            extra={
+                "run_id": run_id,
+                "source_count": len(self.source_page_urls),
+                "max_retries": self.max_retries,
+                "timeout_seconds": self.timeout_seconds,
+            },
+        )
         try:
-            for source_page_url in self.source_page_urls:
+            for source_index, source_page_url in enumerate(self.source_page_urls, start=1):
                 source_page_url = source_page_url.strip()
                 if not source_page_url:
                     continue
-                discovered = self._extract_from_source_page(source_page_url)
+                logger.info(
+                    "seed_manifest_source_processing_started",
+                    extra={
+                        "run_id": run_id,
+                        "source_page_url": source_page_url,
+                        "source_index": source_index,
+                        "source_count": len(self.source_page_urls),
+                    },
+                )
+                discovered = self._extract_from_source_page(source_page_url, run_id=run_id)
                 discovered_link_count += len(discovered)
                 for company, careers_url in discovered:
                     discovered_entries[careers_url] = (company, careers_url, source_page_url)
+                logger.info(
+                    "seed_manifest_source_processing_completed",
+                    extra={
+                        "run_id": run_id,
+                        "source_page_url": source_page_url,
+                        "retained_careers_links": len(discovered),
+                    },
+                )
 
             retained_count = self.store.replace_seed_manifest_entries(
                 entries=discovered_entries.values()
@@ -209,17 +236,42 @@ class SeedManifestBuilder:
             logger.exception("seed_manifest_build_failed", extra={"run_id": run_id})
             raise
 
-    def _extract_from_source_page(self, source_page_url: str) -> list[tuple[str | None, str]]:
+    def _extract_from_source_page(
+        self,
+        source_page_url: str,
+        *,
+        run_id: str,
+    ) -> list[tuple[str | None, str]]:
+        started_at = time.perf_counter()
         parsed_source = urlsplit(source_page_url)
         source_host = (parsed_source.hostname or "").lower()
         if not source_host:
+            logger.warning(
+                "seed_manifest_source_invalid_url",
+                extra={"run_id": run_id, "source_page_url": source_page_url},
+            )
             return []
 
         robots = self.pipeline_helper._resolve_robots(domain=source_host, target_url=source_page_url)
+        logger.info(
+            "seed_manifest_source_robots_resolved",
+            extra={
+                "run_id": run_id,
+                "source_page_url": source_page_url,
+                "source_host": source_host,
+                "robots_allowed": robots.allowed,
+                "crawl_delay_seconds": robots.crawl_delay_seconds,
+                "robots_error": robots.error,
+            },
+        )
         if not robots.allowed:
             logger.warning(
                 "seed_manifest_source_skipped_by_robots",
-                extra={"source_page_url": source_page_url, "error": robots.error},
+                extra={
+                    "run_id": run_id,
+                    "source_page_url": source_page_url,
+                    "error": robots.error,
+                },
             )
             return []
 
@@ -228,6 +280,14 @@ class SeedManifestBuilder:
             crawl_delay = self.pipeline_helper.default_crawl_delay_seconds
         self.pipeline_helper._respect_domain_delay(domain=source_host, crawl_delay_seconds=crawl_delay)
 
+        logger.info(
+            "seed_manifest_source_fetch_started",
+            extra={
+                "run_id": run_id,
+                "source_page_url": source_page_url,
+                "source_host": source_host,
+            },
+        )
         response = self.pipeline_helper._get_with_backoff(
             source_page_url,
             headers={
@@ -239,6 +299,7 @@ class SeedManifestBuilder:
             logger.warning(
                 "seed_manifest_source_fetch_failed",
                 extra={
+                    "run_id": run_id,
                     "source_page_url": source_page_url,
                     "status_code": getattr(response, "status_code", None),
                 },
@@ -267,4 +328,16 @@ class SeedManifestBuilder:
                 continue
             discovered[normalized] = (_extract_company_label(label), normalized)
 
+        duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
+        logger.info(
+            "seed_manifest_source_extraction_completed",
+            extra={
+                "run_id": run_id,
+                "source_page_url": source_page_url,
+                "status_code": response.status_code,
+                "anchors_seen": len(parser.links),
+                "retained_careers_links": len(discovered),
+                "duration_ms": duration_ms,
+            },
+        )
         return list(discovered.values())

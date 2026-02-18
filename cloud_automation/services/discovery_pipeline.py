@@ -105,6 +105,13 @@ class DiscoveryPipeline:
             "accept": "application/json, text/csv, text/plain;q=0.9, */*;q=0.1",
         }
         headers.update(self._seed_manifest_auth_headers())
+        logger.info(
+            "seed_manifest_fetch_started",
+            extra={
+                "manifest_url": manifest_url,
+                "auth_enabled": self.seed_manifest_require_service_jwt,
+            },
+        )
         response = self._get_with_backoff(
             manifest_url,
             headers=headers,
@@ -116,7 +123,17 @@ class DiscoveryPipeline:
             )
             return []
         body = response.text
-        return self._parse_manifest(body)
+        parsed = self._parse_manifest(body)
+        logger.info(
+            "seed_manifest_fetch_completed",
+            extra={
+                "manifest_url": manifest_url,
+                "status_code": response.status_code,
+                "content_type": response.headers.get("content-type", ""),
+                "seed_count": len(parsed),
+            },
+        )
+        return parsed
 
     @staticmethod
     def _parse_manifest(body: str) -> list[tuple[str | None, str]]:
@@ -394,12 +411,42 @@ class DiscoveryPipeline:
                 )
                 if response.status_code in {429, 500, 502, 503, 504} and attempt + 1 < self.max_retries:
                     delay = (2**attempt) + random.uniform(0, 0.25)
+                    logger.warning(
+                        "http_backoff_retry_scheduled",
+                        extra={
+                            "url": url,
+                            "status_code": response.status_code,
+                            "attempt": attempt + 1,
+                            "max_retries": self.max_retries,
+                            "delay_seconds": round(delay, 3),
+                        },
+                    )
                     time.sleep(delay)
                     continue
                 return response
-            except Exception:
+            except Exception as exc:
                 if attempt + 1 >= self.max_retries:
+                    logger.warning(
+                        "http_backoff_failed",
+                        extra={
+                            "url": url,
+                            "attempt": attempt + 1,
+                            "max_retries": self.max_retries,
+                            "error": str(exc),
+                        },
+                    )
                     return None
                 delay = (2**attempt) + random.uniform(0, 0.25)
+                logger.warning(
+                    "http_backoff_retry_scheduled",
+                    extra={
+                        "url": url,
+                        "status_code": None,
+                        "attempt": attempt + 1,
+                        "max_retries": self.max_retries,
+                        "delay_seconds": round(delay, 3),
+                        "error": str(exc),
+                    },
+                )
                 time.sleep(delay)
         return None
