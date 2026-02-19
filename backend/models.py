@@ -21,6 +21,7 @@ class Opportunity(BaseModel):
     id: str
     title: str
     company: str
+    location: Optional[str] = None
     url: str
     reason: str
     discovered_at: datetime = Field(default_factory=utc_now)

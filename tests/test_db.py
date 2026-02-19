@@ -50,3 +50,9 @@ def test_cloud_get_database_url_uses_default_when_env_missing(monkeypatch) -> No
 
 def test_applications_opportunity_id_column_allows_long_external_ids() -> None:
     assert ApplicationRecordRow.__table__.c.opportunity_id.type.length == 128
+
+
+def test_applications_opportunity_location_column_exists() -> None:
+    column = ApplicationRecordRow.__table__.c.opportunity_location
+    assert column.nullable is True
+    assert column.type.length == 255

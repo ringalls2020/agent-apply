@@ -109,6 +109,14 @@ class CloudOrchestrationService:
         self, *, user_id: str, payload: MatchRunStartRequest
     ) -> MatchRunStartResponse:
         user, preferences, resume = self._require_user_context(user_id)
+        preferred_locations = [
+            location.strip()
+            for location in preferences.locations
+            if isinstance(location, str) and location.strip()
+        ]
+        default_location_hint = (
+            preferred_locations[0] if len(preferred_locations) == 1 else None
+        )
         cloud_request = CloudMatchRunRequest(
             user_ref=user_id,
             resume_text=resume.resume_text,
@@ -118,8 +126,7 @@ class CloudOrchestrationService:
                 "seniority": preferences.seniority,
             },
             limit=payload.limit,
-            location=payload.location
-            or (preferences.locations[0] if preferences.locations else None),
+            location=payload.location or default_location_hint,
             seniority=payload.seniority or preferences.seniority,
         )
         created = self.cloud_client.start_match_run(cloud_request)

@@ -33,6 +33,7 @@ export const ME = gql`
       fullName
       email
       interests
+      locations
       applicationsPerDay
       resumeFilename
       autosubmitEnabled
@@ -41,10 +42,11 @@ export const ME = gql`
 `;
 
 export const UPDATE_PREFERENCES = gql`
-  mutation UpdatePreferences($interests: [String!]!, $applicationsPerDay: Int!) {
-    updatePreferences(interests: $interests, applicationsPerDay: $applicationsPerDay) {
+  mutation UpdatePreferences($interests: [String!]!, $applicationsPerDay: Int!, $locations: [String!]) {
+    updatePreferences(interests: $interests, applicationsPerDay: $applicationsPerDay, locations: $locations) {
       userId
       interests
+      locations
       applicationsPerDay
     }
   }

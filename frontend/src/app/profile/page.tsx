@@ -12,8 +12,9 @@ import { Card } from "@/components/ui/Card";
 import { FormField } from "@/components/ui/FormField";
 import { InlineAlert } from "@/components/ui/InlineAlert";
 import { LoadingState } from "@/components/ui/LoadingState";
-import { ME, PROFILE, UPDATE_PROFILE, UPLOAD_RESUME } from "@/graphql/operations";
+import { ME, PROFILE, UPDATE_PREFERENCES, UPDATE_PROFILE, UPLOAD_RESUME } from "@/graphql/operations";
 import { cn } from "@/lib/cn";
+import { COUNTRY_OPTIONS } from "@/lib/countries";
 import { useRequireAuth } from "@/lib/useRequireAuth";
 
 type ProfileQuery = {
@@ -50,6 +51,9 @@ type ProfileQuery = {
 type MeQuery = {
   me: {
     resumeFilename: string | null;
+    interests: string[];
+    locations: string[];
+    applicationsPerDay: number;
   } | null;
 };
 
@@ -163,8 +167,12 @@ function ProfileInner() {
     skip: !isAuthenticated,
   });
   const [updateProfile, { loading: saving }] = useMutation(UPDATE_PROFILE);
+  const [updatePreferences, { loading: savingPreferences }] = useMutation(UPDATE_PREFERENCES);
   const [uploadResume, { loading: uploadingResume }] = useMutation(UPLOAD_RESUME);
   const [form, setForm] = useState<FormState>(defaultState);
+  const [locationMode, setLocationMode] = useState<"worldwide" | "countries">("worldwide");
+  const [selectedLocations, setSelectedLocations] = useState<string[]>([]);
+  const [locationValidationError, setLocationValidationError] = useState("");
   const [notice, setNotice] = useState<{ variant: "success" | "error"; message: string } | null>(null);
   const [resumeNotice, setResumeNotice] = useState<{ variant: "success" | "error"; message: string } | null>(null);
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
@@ -213,6 +221,22 @@ function ProfileInner() {
       disabilityStatus: profile.sensitive.disabilityStatus,
     });
   }, [data]);
+
+  useEffect(() => {
+    if (!meData?.me) return;
+    const locations = meData.me.locations.map((location) => location.trim()).filter(Boolean);
+    setSelectedLocations(locations);
+    setLocationMode(locations.length ? "countries" : "worldwide");
+  }, [meData]);
+
+  const toggleSelectedLocation = (country: string, checked: boolean) => {
+    setLocationValidationError("");
+    setSelectedLocations((current) => {
+      if (!checked) return current.filter((value) => value !== country);
+      if (current.includes(country)) return current;
+      return [...current, country];
+    });
+  };
 
   const customAnswers = useMemo(
     () =>
@@ -300,6 +324,16 @@ function ProfileInner() {
             onSubmit={async (event) => {
               event.preventDefault();
               setNotice(null);
+              setLocationValidationError("");
+              const resolvedLocations = locationMode === "worldwide" ? [] : selectedLocations;
+              if (locationMode === "countries" && !resolvedLocations.length) {
+                setLocationValidationError("Select at least one country or switch to worldwide.");
+                return;
+              }
+              if (!meData?.me) {
+                setNotice({ variant: "error", message: "Could not load existing preferences. Please try again." });
+                return;
+              }
               try {
                 await updateProfile({
                   variables: {
@@ -330,7 +364,14 @@ function ProfileInner() {
                     },
                   },
                 });
-                await refetch();
+                await updatePreferences({
+                  variables: {
+                    interests: meData.me.interests,
+                    applicationsPerDay: meData.me.applicationsPerDay,
+                    locations: resolvedLocations,
+                  },
+                });
+                await Promise.all([refetch(), refetchMe()]);
                 setNotice({ variant: "success", message: "Profile saved." });
               } catch (error: unknown) {
                 setNotice({
@@ -430,6 +471,68 @@ function ProfileInner() {
 
                 {resumeNotice && <InlineAlert variant={resumeNotice.variant}>{resumeNotice.message}</InlineAlert>}
                 {uploadingResume && <LoadingState label="Uploading resume..." className="min-h-[92px]" />}
+              </div>
+            </section>
+
+            <section className="rounded-xl2 border border-border/80 bg-surfaceAlt/55 p-3.5 sm:p-4">
+              <div className="space-y-3">
+                <div>
+                  <p className="text-sm font-semibold text-foreground">Desired job location</p>
+                  <p className="text-xs text-muted text-wrap-anywhere">
+                    Choose worldwide or target one or more countries for matching and dashboard visibility.
+                  </p>
+                </div>
+
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <label className="flex items-center gap-2 rounded-xl2 border border-border/80 bg-surfaceAlt/60 px-3 py-2 text-sm text-foreground">
+                    <input
+                      type="radio"
+                      name="desired-location-mode"
+                      checked={locationMode === "worldwide"}
+                      onChange={() => {
+                        setLocationMode("worldwide");
+                        setLocationValidationError("");
+                      }}
+                    />
+                    Worldwide
+                  </label>
+                  <label className="flex items-center gap-2 rounded-xl2 border border-border/80 bg-surfaceAlt/60 px-3 py-2 text-sm text-foreground">
+                    <input
+                      type="radio"
+                      name="desired-location-mode"
+                      checked={locationMode === "countries"}
+                      onChange={() => {
+                        setLocationMode("countries");
+                        setLocationValidationError("");
+                      }}
+                    />
+                    Select countries
+                  </label>
+                </div>
+
+                {locationMode === "countries" && (
+                  <div className="space-y-2">
+                    <p className="text-xs text-muted text-wrap-anywhere">
+                      Selected countries: {selectedLocations.length}
+                    </p>
+                    <div className="max-h-64 overflow-auto rounded-xl2 border border-border/80 bg-surfaceAlt/60 p-3">
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        {COUNTRY_OPTIONS.map((country) => (
+                          <label key={country} className="flex items-center gap-2 text-sm text-foreground">
+                            <input
+                              type="checkbox"
+                              checked={selectedLocations.includes(country)}
+                              onChange={(event) => toggleSelectedLocation(country, event.target.checked)}
+                            />
+                            <span className="text-wrap-anywhere">{country}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {locationValidationError && <InlineAlert variant="error">{locationValidationError}</InlineAlert>}
               </div>
             </section>
 
@@ -638,7 +741,13 @@ function ProfileInner() {
 
             {notice && <InlineAlert variant={notice.variant}>{notice.message}</InlineAlert>}
 
-            <Button type="submit" loading={saving} loadingText="Saving profile..." className="w-full sm:w-auto">
+            <Button
+              type="submit"
+              loading={saving || savingPreferences}
+              loadingText="Saving profile..."
+              className="w-full sm:w-auto"
+              disabled={meLoading || !meData?.me}
+            >
               Save profile
             </Button>
           </form>

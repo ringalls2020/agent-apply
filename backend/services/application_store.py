@@ -153,6 +153,7 @@ class PostgresStore:
         q: str | None = None,
         companies: list[str] | None = None,
         sources: list[str] | None = None,
+        locations: list[str] | None = None,
         has_contact: bool | None = None,
         discovered_from: datetime | None = None,
         discovered_to: datetime | None = None,
@@ -192,6 +193,21 @@ class PostgresStore:
             filters.append(
                 func.lower(ApplicationRecordRow.opportunity_company).in_(normalized_companies)
             )
+
+        normalized_locations = [
+            location.strip().lower()
+            for location in (locations or [])
+            if isinstance(location, str) and location.strip()
+        ]
+        if normalized_locations:
+            location_clauses = []
+            for location in normalized_locations:
+                location_clauses.append(
+                    func.lower(func.coalesce(ApplicationRecordRow.opportunity_location, "")).like(
+                        f"%{location}%"
+                    )
+                )
+            filters.append(or_(*location_clauses))
 
         source_clauses = []
         for source in (sources or []):
@@ -457,6 +473,7 @@ class PostgresStore:
         row.opportunity_id = record.opportunity.id
         row.opportunity_title = record.opportunity.title
         row.opportunity_company = record.opportunity.company
+        row.opportunity_location = record.opportunity.location
         row.opportunity_url = record.opportunity.url
         row.opportunity_reason = record.opportunity.reason
         row.opportunity_discovered_at = record.opportunity.discovered_at
@@ -498,6 +515,7 @@ class PostgresStore:
                 id=row.opportunity_id,
                 title=row.opportunity_title,
                 company=row.opportunity_company,
+                location=row.opportunity_location,
                 url=row.opportunity_url,
                 reason=row.opportunity_reason,
                 discovered_at=row.opportunity_discovered_at,

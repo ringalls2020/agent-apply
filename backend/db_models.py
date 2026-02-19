@@ -34,6 +34,7 @@ class ApplicationRecordRow(Base):
     opportunity_id: Mapped[str] = mapped_column(String(128), nullable=False)
     opportunity_title: Mapped[str] = mapped_column(String(255), nullable=False)
     opportunity_company: Mapped[str] = mapped_column(String(255), nullable=False)
+    opportunity_location: Mapped[str | None] = mapped_column(String(255))
     opportunity_url: Mapped[str] = mapped_column(Text, nullable=False)
     opportunity_reason: Mapped[str] = mapped_column(Text, nullable=False)
     opportunity_discovered_at: Mapped[datetime] = mapped_column(

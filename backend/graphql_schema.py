@@ -46,6 +46,38 @@ def _derive_application_source(job_url: str) -> str:
     return "other"
 
 
+def _sanitize_locations(locations: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in locations or []:
+        if not isinstance(raw, str):
+            continue
+        cleaned = raw.strip()
+        if not cleaned:
+            continue
+        dedupe_key = cleaned.lower()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized.append(cleaned)
+    return normalized
+
+
+def _normalized_location_filters(locations: list[str] | None) -> list[str]:
+    return [location.lower() for location in _sanitize_locations(locations)]
+
+
+def _location_matches_filters(location: str | None, filters: list[str]) -> bool:
+    if not filters:
+        return True
+    if not isinstance(location, str):
+        return False
+    normalized_location = location.strip().lower()
+    if not normalized_location:
+        return False
+    return any(filter_value in normalized_location for filter_value in filters)
+
+
 class ContactType(graphene.ObjectType):
     name = graphene.String(required=True)
     email = graphene.String(required=True)
@@ -57,6 +89,7 @@ class OpportunityType(graphene.ObjectType):
     id = graphene.ID(required=True)
     title = graphene.String(required=True)
     company = graphene.String(required=True)
+    location = graphene.String()
     url = graphene.String(required=True)
     reason = graphene.String(required=True)
     discovered_at = graphene.DateTime(required=True)
@@ -103,6 +136,7 @@ class AuthUserProfileType(graphene.ObjectType):
     full_name = graphene.String(required=True)
     email = graphene.String(required=True)
     interests = graphene.List(graphene.NonNull(graphene.String), required=True)
+    locations = graphene.List(graphene.NonNull(graphene.String), required=True)
     applications_per_day = graphene.Int(required=True)
     resume_filename = graphene.String()
     autosubmit_enabled = graphene.Boolean(required=True)
@@ -269,6 +303,7 @@ def _build_auth_user_profile(request: Request, user_id: str):
         "full_name": user.full_name,
         "email": user.email,
         "interests": preferences.interests if preferences else [],
+        "locations": _sanitize_locations(preferences.locations if preferences else []),
         "applications_per_day": preferences.applications_per_day if preferences else 25,
         "resume_filename": resume.filename if resume else None,
         "autosubmit_enabled": profile.autosubmit_enabled if profile else False,
@@ -290,6 +325,9 @@ def _run_agent(request: Request) -> list[dict]:
 
     profile = app.state.main_store.get_application_profile(user_id)
     autosubmit_enabled = profile.autosubmit_enabled if profile else False
+    preferred_location_filters = _normalized_location_filters(preferences.locations)
+    preferred_locations = _sanitize_locations(preferences.locations)
+    match_location_hint = preferred_locations[0] if len(preferred_locations) == 1 else None
 
     match_limit = min(max(preferences.applications_per_day, 1), 100)
     poll_interval_seconds = float(os.getenv("AGENT_RUN_MATCH_POLL_INTERVAL_SECONDS", "0.5"))
@@ -305,7 +343,7 @@ def _run_agent(request: Request) -> list[dict]:
         user_id=user_id,
         payload=MatchRunStartRequest(
             limit=match_limit,
-            location=preferences.locations[0] if preferences.locations else None,
+            location=match_location_hint,
             seniority=preferences.seniority,
         ),
     )
@@ -322,17 +360,23 @@ def _run_agent(request: Request) -> list[dict]:
     if latest_status.status == MatchRunStatus.failed:
         raise GraphQLError(latest_status.error or "Match run failed")
 
+    filtered_results = [
+        match
+        for match in latest_status.results
+        if _location_matches_filters(match.location, preferred_location_filters)
+    ]
+
     now = utc_now()
     existing_by_opportunity_id = {
         record.opportunity.id: record
         for record in app.state.store.get_for_user_by_opportunity_ids(
             user_id=user_id,
-            opportunity_ids=[match.external_job_id for match in latest_status.results],
+            opportunity_ids=[match.external_job_id for match in filtered_results],
             include_archived=True,
         )
     }
     applications: list[ApplicationRecord] = []
-    for match in latest_status.results:
+    for match in filtered_results:
         existing_record = existing_by_opportunity_id.get(match.external_job_id)
         discovered_anchor = match.posted_at or (existing_record.opportunity.discovered_at if existing_record else now)
         record = ApplicationRecord(
@@ -341,6 +385,7 @@ def _run_agent(request: Request) -> list[dict]:
                 id=match.external_job_id,
                 title=match.title,
                 company=match.company,
+                location=match.location or (existing_record.opportunity.location if existing_record else None),
                 url=match.apply_url,
                 reason=f"{match.reason} (source={match.source}, score={match.score:.2f})",
                 discovered_at=discovered_anchor,
@@ -388,6 +433,8 @@ class Query(graphene.ObjectType):
     def resolve_applications_search(self, info, filter=None, limit=25, offset=0):
         request = info.context["request"]
         user_id = authenticated_user_id_from_request(request)
+        preferences = request.app.state.main_store.get_preferences(user_id)
+        preferred_locations = _sanitize_locations(preferences.locations if preferences else [])
         parsed_statuses = []
         for raw in (filter.statuses if filter else []) or []:
             parsed_statuses.append(ApplicationStatus(raw.strip().lower()))
@@ -397,6 +444,7 @@ class Query(graphene.ObjectType):
             q=filter.q if filter else None,
             companies=(filter.companies if filter else None) or [],
             sources=(filter.sources if filter else None) or [],
+            locations=preferred_locations,
             has_contact=filter.has_contact if filter else None,
             discovered_from=filter.discovered_from if filter else None,
             discovered_to=filter.discovered_to if filter else None,
@@ -500,12 +548,22 @@ class Mutation(graphene.ObjectType):
     def resolve_update_preferences(self, info, interests, locations=None, seniority=None, applications_per_day=25):
         request = info.context["request"]
         user_id = authenticated_user_id_from_request(request)
+        existing_preferences = request.app.state.orchestrator.get_preferences(user_id)
+        resolved_locations = (
+            locations
+            if locations is not None
+            else (
+                existing_preferences.locations
+                if existing_preferences is not None
+                else []
+            )
+        )
         try:
             result = request.app.state.orchestrator.upsert_preferences(
                 user_id=user_id,
                 payload=PreferenceUpsertRequest(
                     interests=interests,
-                    locations=locations or [],
+                    locations=resolved_locations,
                     seniority=seniority,
                     applications_per_day=applications_per_day,
                 ),

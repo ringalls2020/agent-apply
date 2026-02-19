@@ -133,6 +133,10 @@ def ensure_runtime_schema_compatibility(engine: Engine) -> int:
         application_columns = {
             column["name"]: column for column in inspector.get_columns("applications")
         }
+        if "opportunity_location" not in application_columns:
+            statements.append(
+                "ALTER TABLE applications ADD COLUMN opportunity_location VARCHAR(255)"
+            )
         opportunity_column = application_columns.get("opportunity_id")
         opportunity_length = (
             getattr(opportunity_column.get("type"), "length", None)

@@ -31,6 +31,7 @@ class FakeCloudClient:
         self.last_apply_payload = None
         self.discovery_run_calls = 0
         self.discovery_kick_calls = 0
+        self.next_match_locations: list[str] | None = None
 
     def run_discovery_now(self) -> dict[str, bool]:
         self.discovery_run_calls += 1
@@ -45,15 +46,28 @@ class FakeCloudClient:
         self._next_run += 1
 
         interests = payload.preferences.get("interests") or ["software"]
+        preference_locations = [
+            str(item).strip()
+            for item in (payload.preferences.get("locations") or [])
+            if str(item).strip()
+        ]
         matches: list[MatchedJob] = []
         for idx in range(payload.limit):
             keyword = str(interests[idx % len(interests)]).title()
+            if self.next_match_locations:
+                location = self.next_match_locations[idx % len(self.next_match_locations)]
+            elif payload.location:
+                location = payload.location
+            elif preference_locations:
+                location = preference_locations[idx % len(preference_locations)]
+            else:
+                location = "United States"
             matches.append(
                 MatchedJob(
                     external_job_id=f"{run_id}-job-{idx + 1}",
                     title=f"{keyword} Engineer {idx + 1}",
                     company=f"Live Board {idx + 1}",
-                    location=payload.location or "United States",
+                    location=location,
                     apply_url=f"https://jobs.live-board.test/{idx + 1}",
                     source="greenhouse",
                     reason="Synthetic cloud fixture for API tests",
@@ -61,6 +75,7 @@ class FakeCloudClient:
                 )
             )
 
+        self.next_match_locations = None
         self._runs[run_id] = matches
         return CloudMatchRunCreated(
             run_id=run_id,
@@ -154,15 +169,25 @@ def _seed_profile(
     *,
     token: str,
     applications_per_day: int = 3,
+    locations: list[str] | None = None,
     include_application_profile: bool = False,
 ) -> None:
     preferences_result = _graphql(
         client,
         """
-        mutation UpdatePreferences($interests: [String!]!, $applicationsPerDay: Int!) {
-          updatePreferences(interests: $interests, applicationsPerDay: $applicationsPerDay) {
+        mutation UpdatePreferences(
+          $interests: [String!]!
+          $applicationsPerDay: Int!
+          $locations: [String!]
+        ) {
+          updatePreferences(
+            interests: $interests
+            applicationsPerDay: $applicationsPerDay
+            locations: $locations
+          ) {
             userId
             interests
+            locations
             applicationsPerDay
           }
         }
@@ -170,6 +195,7 @@ def _seed_profile(
         {
             "interests": ["ai", "climate"],
             "applicationsPerDay": applications_per_day,
+            "locations": locations,
         },
         token=token,
     )
@@ -374,6 +400,7 @@ def _seed_application_record(
     app_id: str,
     opportunity_id: str,
     discovered_at_offset_days: int,
+    location: str | None = None,
     status: ApplicationStatus = ApplicationStatus.review,
 ) -> ApplicationRecord:
     record = ApplicationRecord(
@@ -382,6 +409,7 @@ def _seed_application_record(
             id=opportunity_id,
             title="Platform Engineer",
             company="Acme",
+            location=location,
             url=f"https://example.com/jobs/{opportunity_id}",
             reason="seeded for tests",
             discovered_at=utc_now() - timedelta(days=discovered_at_offset_days),
@@ -442,6 +470,7 @@ def test_graphql_signup_login_and_me_flow(test_client: TestClient) -> None:
             id
             email
             fullName
+            locations
             applicationsPerDay
           }
         }
@@ -450,6 +479,7 @@ def test_graphql_signup_login_and_me_flow(test_client: TestClient) -> None:
     )
     assert "errors" not in me
     assert me["data"]["me"]["email"] == "jane@example.com"
+    assert me["data"]["me"]["locations"] == []
 
     login = _graphql(
         test_client,
@@ -467,6 +497,82 @@ def test_graphql_signup_login_and_me_flow(test_client: TestClient) -> None:
     )
     assert "errors" not in login
     assert login["data"]["login"]["user"]["id"] == signup["user"]["id"]
+
+
+def test_graphql_update_preferences_preserves_locations_when_omitted(test_client: TestClient) -> None:
+    signup = _signup_user(
+        test_client,
+        full_name="Location Preserve",
+        email="location-preserve@example.com",
+    )
+    token = signup["token"]
+
+    first_update = _graphql(
+        test_client,
+        """
+        mutation UpdatePreferences(
+          $interests: [String!]!
+          $applicationsPerDay: Int!
+          $locations: [String!]
+        ) {
+          updatePreferences(
+            interests: $interests
+            applicationsPerDay: $applicationsPerDay
+            locations: $locations
+          ) {
+            interests
+            locations
+            applicationsPerDay
+          }
+        }
+        """,
+        {
+            "interests": ["backend", "security"],
+            "applicationsPerDay": 3,
+            "locations": ["Canada", "Germany"],
+        },
+        token=token,
+    )
+    assert "errors" not in first_update
+    assert first_update["data"]["updatePreferences"]["locations"] == ["Canada", "Germany"]
+
+    second_update = _graphql(
+        test_client,
+        """
+        mutation UpdatePreferences($interests: [String!]!, $applicationsPerDay: Int!) {
+          updatePreferences(interests: $interests, applicationsPerDay: $applicationsPerDay) {
+            interests
+            locations
+            applicationsPerDay
+          }
+        }
+        """,
+        {
+            "interests": ["platform"],
+            "applicationsPerDay": 5,
+        },
+        token=token,
+    )
+    assert "errors" not in second_update
+    assert second_update["data"]["updatePreferences"]["locations"] == ["Canada", "Germany"]
+
+    me_result = _graphql(
+        test_client,
+        """
+        query Me {
+          me {
+            interests
+            locations
+            applicationsPerDay
+          }
+        }
+        """,
+        token=token,
+    )
+    assert "errors" not in me_result
+    assert me_result["data"]["me"]["locations"] == ["Canada", "Germany"]
+    assert me_result["data"]["me"]["interests"] == ["platform"]
+    assert me_result["data"]["me"]["applicationsPerDay"] == 5
 
 
 def test_graphql_login_rejects_invalid_credentials(test_client: TestClient) -> None:
@@ -547,6 +653,45 @@ def test_graphql_run_agent_mutation_returns_applications(test_client: TestClient
     )
     assert "errors" not in result
     assert len(result["data"]["runAgent"]) == 2
+
+
+def test_graphql_run_agent_filters_results_by_multi_country_preferences(
+    test_client: TestClient,
+) -> None:
+    signup = _signup_user(
+        test_client,
+        full_name="Location Filter Runner",
+        email="location-filter-runner@example.com",
+    )
+    token = signup["token"]
+    _seed_profile(
+        test_client,
+        token=token,
+        applications_per_day=3,
+        locations=["Canada", "Germany"],
+    )
+
+    fake_cloud = test_client.app.state.test_fake_cloud_client
+    fake_cloud.next_match_locations = ["Canada", "Brazil", "Germany"]
+
+    result = _graphql(
+        test_client,
+        """
+        mutation RunAgent {
+          runAgent {
+            id
+            opportunity {
+              location
+            }
+          }
+        }
+        """,
+        token=token,
+    )
+    assert "errors" not in result
+    locations = [item["opportunity"]["location"] for item in result["data"]["runAgent"]]
+    assert len(locations) == 2
+    assert set(locations) == {"Canada", "Germany"}
 
 
 def test_graphql_run_agent_enqueues_discovery_kick(test_client: TestClient) -> None:
@@ -720,6 +865,85 @@ def test_graphql_applications_search_hides_archived_by_default(test_client: Test
     assert "archived-app" not in default_ids
     assert "active-app" in include_ids
     assert "archived-app" in include_ids
+
+
+def test_graphql_applications_search_enforces_strict_preferred_locations(
+    test_client: TestClient,
+) -> None:
+    signup = _signup_user(test_client, full_name="Search Location User", email="search-location@example.com")
+    token = signup["token"]
+    user_id = signup["user"]["id"]
+
+    preferences_result = _graphql(
+        test_client,
+        """
+        mutation UpdatePreferences(
+          $interests: [String!]!
+          $applicationsPerDay: Int!
+          $locations: [String!]
+        ) {
+          updatePreferences(
+            interests: $interests
+            applicationsPerDay: $applicationsPerDay
+            locations: $locations
+          ) {
+            userId
+          }
+        }
+        """,
+        {
+            "interests": ["platform"],
+            "applicationsPerDay": 3,
+            "locations": ["Canada"],
+        },
+        token=token,
+    )
+    assert "errors" not in preferences_result
+
+    _seed_application_record(
+        test_client,
+        user_id=user_id,
+        app_id="canada-app",
+        opportunity_id="canada-job",
+        discovered_at_offset_days=0,
+        location="Toronto, Canada",
+    )
+    _seed_application_record(
+        test_client,
+        user_id=user_id,
+        app_id="us-app",
+        opportunity_id="us-job",
+        discovered_at_offset_days=0,
+        location="Austin, United States",
+    )
+    _seed_application_record(
+        test_client,
+        user_id=user_id,
+        app_id="unknown-location-app",
+        opportunity_id="unknown-location-job",
+        discovered_at_offset_days=0,
+        location=None,
+    )
+
+    result = _graphql(
+        test_client,
+        """
+        query Search($filter: ApplicationFilterInput) {
+          applicationsSearch(filter: $filter, limit: 25, offset: 0) {
+            applications {
+              id
+            }
+            totalCount
+          }
+        }
+        """,
+        {"filter": {}},
+        token=token,
+    )
+
+    assert "errors" not in result
+    assert result["data"]["applicationsSearch"]["totalCount"] == 1
+    assert result["data"]["applicationsSearch"]["applications"] == [{"id": "canada-app"}]
 
 
 def test_graphql_apply_selected_applications_deduplicates_ids(

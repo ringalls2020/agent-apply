@@ -20,13 +20,20 @@ def store() -> Iterator[PostgresStore]:
     engine.dispose()
 
 
-def _build_record(*, app_id: str, opportunity_id: str, discovered_at_offset_days: int) -> ApplicationRecord:
+def _build_record(
+    *,
+    app_id: str,
+    opportunity_id: str,
+    discovered_at_offset_days: int,
+    location: str | None = None,
+) -> ApplicationRecord:
     return ApplicationRecord(
         id=app_id,
         opportunity=Opportunity(
             id=opportunity_id,
             title="Backend Engineer",
             company="Acme",
+            location=location,
             url=f"https://example.com/jobs/{opportunity_id}",
             reason="Strong backend overlap",
             discovered_at=utc_now() - timedelta(days=discovered_at_offset_days),
@@ -118,3 +125,38 @@ def test_archived_records_hidden_by_default_and_included_on_toggle(store: Postgr
     )
     assert archive_total == 2
     assert {item.id for item in archive_search} == {"fresh-app", "old-app"}
+
+
+def test_search_for_user_filters_strictly_by_locations(store: PostgresStore) -> None:
+    canada = _build_record(
+        app_id="canada-app",
+        opportunity_id="job-ca",
+        discovered_at_offset_days=0,
+        location="Toronto, Canada",
+    )
+    usa = _build_record(
+        app_id="usa-app",
+        opportunity_id="job-us",
+        discovered_at_offset_days=0,
+        location="Austin, United States",
+    )
+    unknown = _build_record(
+        app_id="unknown-app",
+        opportunity_id="job-unknown",
+        discovered_at_offset_days=0,
+        location=None,
+    )
+
+    store.upsert_for_user("user-1", canada)
+    store.upsert_for_user("user-1", usa)
+    store.upsert_for_user("user-1", unknown)
+
+    filtered, total = store.search_for_user(
+        user_id="user-1",
+        locations=["canada"],
+        limit=10,
+        offset=0,
+    )
+
+    assert total == 1
+    assert [item.id for item in filtered] == ["canada-app"]
