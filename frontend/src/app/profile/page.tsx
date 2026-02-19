@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMutation, useQuery } from "@apollo/client";
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
 import { AppShell } from "@/components/layout/AppShell";
@@ -12,7 +12,7 @@ import { Card } from "@/components/ui/Card";
 import { FormField } from "@/components/ui/FormField";
 import { InlineAlert } from "@/components/ui/InlineAlert";
 import { LoadingState } from "@/components/ui/LoadingState";
-import { PROFILE, UPDATE_PROFILE } from "@/graphql/operations";
+import { ME, PROFILE, UPDATE_PROFILE, UPLOAD_RESUME } from "@/graphql/operations";
 import { cn } from "@/lib/cn";
 import { useRequireAuth } from "@/lib/useRequireAuth";
 
@@ -45,6 +45,12 @@ type ProfileQuery = {
       disabilityStatus: string;
     };
   };
+};
+
+type MeQuery = {
+  me: {
+    resumeFilename: string | null;
+  } | null;
 };
 
 type FormState = {
@@ -111,6 +117,17 @@ const setupStepLabelByKey: Record<string, string> = {
   interests: "set interests",
 };
 
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    const chunk = bytes.subarray(offset, offset + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
 function defaultState(): FormState {
   return {
     autosubmitEnabled: false,
@@ -139,11 +156,18 @@ function defaultState(): FormState {
 
 function ProfileInner() {
   const searchParams = useSearchParams();
+  const resumeSectionRef = useRef<HTMLDivElement | null>(null);
   const { isCheckingAuth, isAuthenticated } = useRequireAuth();
   const { data, loading, refetch } = useQuery<ProfileQuery>(PROFILE, { skip: !isAuthenticated });
+  const { data: meData, loading: meLoading, refetch: refetchMe } = useQuery<MeQuery>(ME, {
+    skip: !isAuthenticated,
+  });
   const [updateProfile, { loading: saving }] = useMutation(UPDATE_PROFILE);
+  const [uploadResume, { loading: uploadingResume }] = useMutation(UPLOAD_RESUME);
   const [form, setForm] = useState<FormState>(defaultState);
   const [notice, setNotice] = useState<{ variant: "success" | "error"; message: string } | null>(null);
+  const [resumeNotice, setResumeNotice] = useState<{ variant: "success" | "error"; message: string } | null>(null);
+  const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
   const setupRequired = searchParams.get("required") === "setup";
   const rawNextPath = searchParams.get("next");
   const safeNextPath = rawNextPath && rawNextPath.startsWith("/") ? rawNextPath : "/applications";
@@ -155,6 +179,12 @@ function ProfileInner() {
         .filter((step) => step in setupStepLabelByKey),
     [searchParams],
   );
+  const jumpToResumeSection = () => {
+    const section = resumeSectionRef.current;
+    if (!section) return;
+    section.scrollIntoView({ behavior: "smooth", block: "start" });
+    section.focus();
+  };
 
   useEffect(() => {
     if (!data?.profile) return;
@@ -242,9 +272,9 @@ function ProfileInner() {
               </p>
               <div className="flex flex-wrap gap-2">
                 {missingSetupSteps.includes("resume") && (
-                  <Link href="/resume" className={buttonVariants({ variant: "secondary", size: "sm" })}>
+                  <Button type="button" variant="secondary" size="sm" onClick={jumpToResumeSection}>
                     Upload resume
-                  </Link>
+                  </Button>
                 )}
                 {missingSetupSteps.includes("interests") && (
                   <Link href="/preferences" className={buttonVariants({ variant: "secondary", size: "sm" })}>
@@ -330,6 +360,77 @@ function ProfileInner() {
                   </p>
                 </div>
               </label>
+            </section>
+
+            <section
+              id="profile-resume-section"
+              ref={resumeSectionRef}
+              tabIndex={-1}
+              className="rounded-xl2 border border-border/80 bg-surfaceAlt/55 p-3.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/45 sm:p-4"
+            >
+              <div className="space-y-3">
+                <div>
+                  <p className="text-sm font-semibold text-foreground">Resume</p>
+                  <p className="text-xs text-muted text-wrap-anywhere">
+                    Upload your latest resume so matching and application quality stay aligned with your profile.
+                  </p>
+                </div>
+
+                <label className="relative flex cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed border-accent/45 bg-accent/5 p-5 text-center transition duration-250 hover:bg-accent/10 focus-within:ring-2 focus-within:ring-accent/40 sm:p-6">
+                  <input
+                    type="file"
+                    accept=".txt,.md,.pdf,.doc,.docx"
+                    className="absolute inset-0 cursor-pointer opacity-0"
+                    onChange={async (event) => {
+                      const file = event.target.files?.[0];
+                      if (!file) return;
+                      setSelectedFileName(file.name);
+                      setResumeNotice(null);
+
+                      try {
+                        const lowerName = file.name.toLowerCase();
+                        const shouldReadText = lowerName.endsWith(".txt") || lowerName.endsWith(".md");
+                        const resumeText = shouldReadText ? await file.text() : null;
+                        const fileContentBase64 = arrayBufferToBase64(await file.arrayBuffer());
+                        await uploadResume({
+                          variables: {
+                            filename: file.name,
+                            resumeText,
+                            fileContentBase64,
+                            fileMimeType: file.type || null,
+                          },
+                        });
+                        await refetchMe();
+                        setResumeNotice({ variant: "success", message: "Resume uploaded successfully." });
+                      } catch (error: unknown) {
+                        setResumeNotice({
+                          variant: "error",
+                          message: error instanceof Error ? error.message : "Could not upload resume.",
+                        });
+                      }
+                    }}
+                  />
+                  <p className="text-sm font-semibold text-accentSoft text-wrap-anywhere">
+                    Drop a resume file or click to browse
+                  </p>
+                  <p className="mt-1 text-xs text-muted text-wrap-anywhere">
+                    Accepted formats: .txt, .md, .pdf, .doc, .docx
+                  </p>
+                </label>
+
+                <div className="rounded-xl2 border border-border/80 bg-surfaceAlt/55 p-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted">Current resume</p>
+                  <p className="mt-1 text-sm text-foreground text-wrap-anywhere">
+                    {meLoading ? "Loading..." : meData?.me?.resumeFilename || "No resume uploaded"}
+                  </p>
+                  {selectedFileName && (
+                    <p className="mt-2 text-xs text-muted text-wrap-anywhere">Last selected file: {selectedFileName}</p>
+                  )}
+                </div>
+
+                {resumeNotice && <InlineAlert variant={resumeNotice.variant}>{resumeNotice.message}</InlineAlert>}
+                {uploadingResume && <LoadingState label="Uploading resume..." className="min-h-[92px]" />}
+              </div>
             </section>
 
             <section className="grid gap-3 sm:gap-4 sm:grid-cols-2">
@@ -548,5 +649,13 @@ function ProfileInner() {
 }
 
 export default function ProfilePage() {
-  return <ProfileInner />;
+  return (
+    <Suspense fallback={
+      <AppShell>
+        <LoadingState label="Loading profile..." />
+      </AppShell>
+    }>
+      <ProfileInner />
+    </Suspense>
+  );
 }

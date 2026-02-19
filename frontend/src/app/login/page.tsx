@@ -6,18 +6,30 @@ import { useRouter } from "next/navigation";
 import { useMutation } from "@apollo/client";
 
 import { AuthShell } from "@/components/layout/AuthShell";
+import { AppShell } from "@/components/layout/AppShell";
 import { Button } from "@/components/ui/Button";
 import { FormField } from "@/components/ui/FormField";
 import { InlineAlert } from "@/components/ui/InlineAlert";
+import { LoadingState } from "@/components/ui/LoadingState";
 import { setAuthToken } from "@/lib/authToken";
 import { LOGIN } from "@/graphql/operations";
+import { useRedirectAuthenticatedUser } from "@/lib/useRedirectAuthenticatedUser";
 
 function LoginInner() {
+  const { isCheckingSession } = useRedirectAuthenticatedUser();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const router = useRouter();
   const [login, { loading }] = useMutation(LOGIN);
+
+  if (isCheckingSession) {
+    return (
+      <AppShell>
+        <LoadingState label="Checking session..." />
+      </AppShell>
+    );
+  }
 
   return (
     <AuthShell

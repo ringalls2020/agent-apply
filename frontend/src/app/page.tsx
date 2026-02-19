@@ -1,8 +1,12 @@
+"use client";
+
 import Link from "next/link";
 
 import { AppShell } from "@/components/layout/AppShell";
 import { buttonVariants } from "@/components/ui/Button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/Card";
+import { LoadingState } from "@/components/ui/LoadingState";
+import { useRedirectAuthenticatedUser } from "@/lib/useRedirectAuthenticatedUser";
 
 const pillars = [
   {
@@ -20,6 +24,16 @@ const pillars = [
 ];
 
 export default function HomePage() {
+  const { isCheckingSession } = useRedirectAuthenticatedUser();
+
+  if (isCheckingSession) {
+    return (
+      <AppShell>
+        <LoadingState label="Checking session..." />
+      </AppShell>
+    );
+  }
+
   return (
     <AppShell className="space-y-8 pb-8 sm:space-y-12">
       <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

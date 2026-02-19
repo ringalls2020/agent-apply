@@ -11,7 +11,6 @@ const navLinks = [
   { href: "/applications", label: "Applications" },
   { href: "/profile", label: "Profile" },
   { href: "/preferences", label: "Preferences" },
-  { href: "/resume", label: "Resume" },
 ];
 
 export function Nav() {

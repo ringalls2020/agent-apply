@@ -4,7 +4,7 @@ This frontend is a complete Next.js app with an integrated GraphQL BFF (`/api/gr
 
 - account signup/login,
 - user preferences management,
-- resume upload,
+- application profile management (including resume upload),
 - review of submitted applications,
 - adjusting application-per-day rate,
 - manually running the application agent.
