@@ -100,6 +100,10 @@ class JobIntelStore(LegacyJobIntelStore):
                             created_at=now,
                         )
                     )
+                    # PostgreSQL enforces FK references immediately; ensure the
+                    # canonical normalized job row exists before identity/fingerprint
+                    # rows reference canonical_job_id.
+                    session.flush()
                     canonical_job_id = job.id
                 else:
                     existing_job.title = job.title
@@ -126,7 +130,6 @@ class JobIntelStore(LegacyJobIntelStore):
                     )
                     session.add(identity_row)
                     identity_cache[identity.canonical_key] = identity_row
-                    session.flush()
                 else:
                     identity_row.canonical_job_id = canonical_job_id
                     identity_row.provider = identity.provider
