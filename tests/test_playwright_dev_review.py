@@ -6,8 +6,7 @@ import sys
 import types
 from typing import Any
 
-import cloud_automation.services as cloud_services
-import cloud_automation.services_legacy as cloud_services_legacy
+import cloud_automation.services.playwright as playwright_services
 from common.time import utc_now
 from cloud_automation.models import (
     ApplyAttemptRecord,
@@ -393,11 +392,11 @@ def test_manual_submit_detection_timeout_marks_blocked(monkeypatch) -> None:
         ticks["now"] += 0.35
         return ticks["now"]
 
-    monkeypatch.setattr(cloud_services.time, "monotonic", _fake_monotonic)
+    monkeypatch.setattr(playwright_services.time, "monotonic", _fake_monotonic)
     async def _fake_async_sleep(_seconds: float) -> None:
         return None
 
-    monkeypatch.setattr(cloud_services_legacy.asyncio, "sleep", _fake_async_sleep)
+    monkeypatch.setattr(playwright_services.asyncio, "sleep", _fake_async_sleep)
 
     result = asyncio.run(executor._await_manual_submit(page=page, attempt=_build_attempt()))
 

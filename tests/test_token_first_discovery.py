@@ -8,7 +8,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 
 from common.time import utc_now
 from cloud_automation.db import Base, create_db_engine, create_session_factory
@@ -21,6 +21,7 @@ from cloud_automation.db_models import (
     NormalizedJobRow,
 )
 from cloud_automation.adapters.live import _parse_datetime
+from cloud_automation.models import NormalizedJob as NormalizedJobModel
 from cloud_automation.services import CommonCrawlCoordinator, DiscoveryCoordinator, JobIntelStore
 from cloud_automation.services.ats_token_utils import (
     ExtractedToken,
@@ -39,6 +40,26 @@ def store() -> JobIntelStore:
     Base.metadata.create_all(bind=engine)
     yield JobIntelStore(create_session_factory(engine))
     engine.dispose()
+
+
+def _count_select_statements(store: JobIntelStore, fn) -> int:
+    bind = store._session_factory.kw.get("bind")
+    assert bind is not None
+    count = 0
+
+    def _before_cursor_execute(
+        _conn, _cursor, statement, _parameters, _context, _executemany
+    ) -> None:
+        nonlocal count
+        if statement.lstrip().upper().startswith("SELECT"):
+            count += 1
+
+    event.listen(bind, "before_cursor_execute", _before_cursor_execute)
+    try:
+        fn()
+    finally:
+        event.remove(bind, "before_cursor_execute", _before_cursor_execute)
+    return count
 
 
 def test_extract_ats_tokens_patterns() -> None:
@@ -133,6 +154,59 @@ def test_token_upsert_deduplicates_and_preserves_evidence(store: JobIntelStore) 
     with store._session_factory() as session:
         assert session.scalar(select(func.count()).select_from(AtsTokenRow)) == 1
         assert session.scalar(select(func.count()).select_from(AtsTokenEvidenceRow)) == 2
+
+
+def test_record_extracted_tokens_uses_batched_selects(store: JobIntelStore) -> None:
+    tokens = {
+        ExtractedToken(provider="greenhouse", token=f"batch-{index}")
+        for index in range(25)
+    }
+
+    select_count = _count_select_statements(
+        store,
+        lambda: store.record_extracted_tokens(
+            extracted_tokens=tokens,
+            method="method_a",
+            evidence_url="https://batch.example/careers",
+        ),
+    )
+
+    assert select_count <= 4
+
+
+def test_record_discovery_documents_uses_batched_selects(store: JobIntelStore) -> None:
+    discovered_urls = [f"https://acme.example/jobs/{index}" for index in range(12)]
+    raw_documents = {
+        url: f"<html><body>{url}</body></html>"
+        for url in discovered_urls
+    }
+    jobs = [
+        NormalizedJobModel(
+            id=f"greenhouse-acme-{index}",
+            title=f"Backend Engineer {index}",
+            company="acme",
+            location="United States",
+            salary=None,
+            apply_url=f"https://boards.greenhouse.io/acme/jobs/{index}",
+            source="greenhouse",
+            posted_at=utc_now(),
+            description="Backend platform role",
+        )
+        for index in range(12)
+    ]
+
+    select_count = _count_select_statements(
+        store,
+        lambda: store.record_discovery_documents(
+            source_name="greenhouse-seed",
+            discovered_urls=discovered_urls,
+            raw_documents=raw_documents,
+            normalized_jobs=jobs,
+            next_cursor=None,
+        ),
+    )
+
+    assert select_count <= 8
 
 
 def test_discovery_refresh_queue_claim_and_finalize(store: JobIntelStore) -> None:

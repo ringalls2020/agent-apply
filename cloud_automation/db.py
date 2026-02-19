@@ -5,7 +5,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-DEFAULT_DATABASE_URL = os.getenv("JOBS_DATABASE_URL")
+DEFAULT_DATABASE_URL = "postgresql+psycopg://postgres@localhost:5432/jobs_intel"
 
 
 class Base(DeclarativeBase):

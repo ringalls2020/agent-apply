@@ -18,3 +18,14 @@ def test_entrypoints_do_not_import_legacy_service_modules() -> None:
     cloud_main = (ROOT / "cloud_automation/main.py").read_text(encoding="utf-8")
     assert "services_legacy" not in backend_main
     assert "services_legacy" not in cloud_main
+
+
+def test_service_modules_do_not_import_legacy_modules() -> None:
+    service_roots = [
+        ROOT / "backend/services",
+        ROOT / "cloud_automation/services",
+    ]
+    for service_root in service_roots:
+        for module_path in service_root.rglob("*.py"):
+            contents = module_path.read_text(encoding="utf-8")
+            assert "services_legacy" not in contents, str(module_path)

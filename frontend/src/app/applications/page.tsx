@@ -366,16 +366,16 @@ function ApplicationsInner() {
       header: "Source",
       render: (app) => <span className="text-muted capitalize">{app.source}</span>,
     },
-      {
-        id: "status",
-        header: "Status",
-        render: (app) => (
-          <div className="flex flex-wrap items-center gap-1.5">
-            <StatusPill status={getEffectiveStatus(app)} />
-            {app.isArchived && <Badge variant="default">Archived</Badge>}
-          </div>
-        ),
-      },
+    {
+      id: "status",
+      header: "Status",
+      render: (app) => (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <StatusPill status={getEffectiveStatus(app)} />
+          {app.isArchived && <Badge variant="default">Archived</Badge>}
+        </div>
+      ),
+    },
     {
       id: "contact",
       header: "Point of contact",
@@ -396,7 +396,9 @@ function ApplicationsInner() {
     {
       id: "submitted",
       header: "Submitted",
-      render: (app) => <span className="text-muted">{formatSubmittedAt(app.submittedAt)}</span>,
+      render: (app) => <span className="text-muted">{formatSubmittedAt(app.submittedAt ??
+        "-"
+      )}</span>,
     },
     {
       id: "actions",

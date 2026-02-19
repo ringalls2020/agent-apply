@@ -8,7 +8,7 @@ import types
 import pytest
 from fastapi.testclient import TestClient
 
-import cloud_automation.services_legacy as cloud_services_legacy
+import cloud_automation.services.callbacks as callback_services
 from common.time import utc_now
 from cloud_automation.db_models import DiscoveryRefreshRequestRow, NormalizedJobRow
 from cloud_automation.main import create_app
@@ -525,7 +525,7 @@ def test_callback_emitter_retries_until_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("MAIN_CALLBACK_URL", "https://callback.test/internal")
-    monkeypatch.setattr(cloud_services_legacy.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(callback_services.time, "sleep", lambda _seconds: None)
 
     client = _FakeHttpClient([500, 200])
     emitter = CallbackEmitter(http_client=client, max_attempts=3, retry_base_delay_ms=1)
@@ -538,7 +538,7 @@ def test_callback_emitter_stops_after_max_attempts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("MAIN_CALLBACK_URL", "https://callback.test/internal")
-    monkeypatch.setattr(cloud_services_legacy.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(callback_services.time, "sleep", lambda _seconds: None)
 
     client = _FakeHttpClient([500, 500, 500, 500])
     emitter = CallbackEmitter(http_client=client, max_attempts=3, retry_base_delay_ms=1)

@@ -6,7 +6,7 @@ from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-DEFAULT_DATABASE_URL = os.getenv("DATABASE_URL")
+DEFAULT_DATABASE_URL = "postgresql+psycopg://postgres@localhost:5432/agent_apply"
 logger = logging.getLogger(__name__)
 
 
