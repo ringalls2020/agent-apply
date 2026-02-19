@@ -562,7 +562,7 @@ class Mutation(graphene.ObjectType):
             include_archived=True,
         )
         existing_by_id = {application.id: application for application in existing}
-        eligible_statuses = {ApplicationStatus.review, ApplicationStatus.viewed}
+        eligible_statuses = {ApplicationStatus.review, ApplicationStatus.viewed, ApplicationStatus.failed}
         accepted_ids: list[str] = []
         accepted_jobs: list[ApplyTargetJob] = []
         skipped: list[BulkApplySkippedItem] = []

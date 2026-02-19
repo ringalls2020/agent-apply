@@ -40,7 +40,7 @@ export type FilterState = {
 export const PAGE_SIZE = 25;
 export const MAX_BULK_SELECTION = 10;
 
-const SELECTABLE_STATUSES = new Set(["review", "viewed"]);
+const SELECTABLE_STATUSES = new Set(["review", "viewed", "failed"]);
 
 export const statusOptions = ["review", "viewed", "applying", "applied", "failed", "notified"];
 export const sourceOptions = ["greenhouse", "lever", "smartrecruiters", "workday", "other"];

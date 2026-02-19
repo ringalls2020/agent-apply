@@ -752,6 +752,196 @@ def test_graphql_apply_selected_applications_deduplicates_ids(
     assert len(fake_cloud.last_apply_payload.jobs) == 1
 
 
+def test_graphql_apply_selected_applications_accepts_failed_for_retry(
+    test_client: TestClient,
+) -> None:
+    signup = _signup_user(
+        test_client,
+        full_name="Graph Apply Retry Failed",
+        email="graph-apply-retry-failed@example.com",
+    )
+    token = signup["token"]
+    user_id = signup["user"]["id"]
+    _seed_profile(test_client, token=token, applications_per_day=3)
+
+    failed = _seed_application_record(
+        test_client,
+        user_id=user_id,
+        app_id="failed-retry-app",
+        opportunity_id="failed-retry-job",
+        discovered_at_offset_days=0,
+        status=ApplicationStatus.failed,
+    )
+
+    apply_result = _graphql(
+        test_client,
+        """
+        mutation ApplySelected($applicationIds: [ID!]!) {
+          applySelectedApplications(applicationIds: $applicationIds) {
+            runId
+            acceptedApplicationIds
+            applications {
+              id
+              status
+            }
+            skipped {
+              applicationId
+              reason
+              status
+            }
+          }
+        }
+        """,
+        variables={"applicationIds": [failed.id]},
+        token=token,
+    )
+
+    assert "errors" not in apply_result
+    payload = apply_result["data"]["applySelectedApplications"]
+    assert payload["runId"]
+    assert payload["acceptedApplicationIds"] == [failed.id]
+    assert payload["applications"] == [{"id": failed.id, "status": "applying"}]
+    assert payload["skipped"] == []
+
+    fake_cloud = test_client.app.state.test_fake_cloud_client
+    assert fake_cloud.apply_run_starts == 1
+    assert fake_cloud.last_apply_payload is not None
+    assert len(fake_cloud.last_apply_payload.jobs) == 1
+    assert fake_cloud.last_apply_payload.jobs[0].external_job_id == failed.opportunity.id
+
+
+def test_graphql_apply_selected_applications_skips_ineligible_but_retries_failed(
+    test_client: TestClient,
+) -> None:
+    signup = _signup_user(
+        test_client,
+        full_name="Graph Apply Mixed Eligibility",
+        email="graph-apply-mixed-eligibility@example.com",
+    )
+    token = signup["token"]
+    user_id = signup["user"]["id"]
+    _seed_profile(test_client, token=token, applications_per_day=3)
+
+    failed = _seed_application_record(
+        test_client,
+        user_id=user_id,
+        app_id="failed-mixed-app",
+        opportunity_id="failed-mixed-job",
+        discovered_at_offset_days=0,
+        status=ApplicationStatus.failed,
+    )
+    ineligible = _seed_application_record(
+        test_client,
+        user_id=user_id,
+        app_id="applied-mixed-app",
+        opportunity_id="applied-mixed-job",
+        discovered_at_offset_days=0,
+        status=ApplicationStatus.applied,
+    )
+
+    apply_result = _graphql(
+        test_client,
+        """
+        mutation ApplySelected($applicationIds: [ID!]!) {
+          applySelectedApplications(applicationIds: $applicationIds) {
+            runId
+            acceptedApplicationIds
+            applications {
+              id
+              status
+            }
+            skipped {
+              applicationId
+              reason
+              status
+            }
+          }
+        }
+        """,
+        variables={"applicationIds": [failed.id, ineligible.id]},
+        token=token,
+    )
+
+    assert "errors" not in apply_result
+    payload = apply_result["data"]["applySelectedApplications"]
+    assert payload["runId"]
+    assert payload["acceptedApplicationIds"] == [failed.id]
+    assert payload["applications"] == [{"id": failed.id, "status": "applying"}]
+    assert payload["skipped"] == [
+        {
+            "applicationId": ineligible.id,
+            "reason": "ineligible_status",
+            "status": "applied",
+        }
+    ]
+
+    fake_cloud = test_client.app.state.test_fake_cloud_client
+    assert fake_cloud.apply_run_starts == 1
+    assert fake_cloud.last_apply_payload is not None
+    assert len(fake_cloud.last_apply_payload.jobs) == 1
+    assert fake_cloud.last_apply_payload.jobs[0].external_job_id == failed.opportunity.id
+
+
+def test_graphql_apply_selected_applications_skips_archived_failed_application(
+    test_client: TestClient,
+) -> None:
+    signup = _signup_user(
+        test_client,
+        full_name="Graph Apply Archived Failed",
+        email="graph-apply-archived-failed@example.com",
+    )
+    token = signup["token"]
+    user_id = signup["user"]["id"]
+
+    archived_failed = _seed_application_record(
+        test_client,
+        user_id=user_id,
+        app_id="archived-failed-app",
+        opportunity_id="archived-failed-job",
+        discovered_at_offset_days=45,
+        status=ApplicationStatus.failed,
+    )
+
+    apply_result = _graphql(
+        test_client,
+        """
+        mutation ApplySelected($applicationIds: [ID!]!) {
+          applySelectedApplications(applicationIds: $applicationIds) {
+            runId
+            acceptedApplicationIds
+            applications {
+              id
+              status
+            }
+            skipped {
+              applicationId
+              reason
+              status
+            }
+          }
+        }
+        """,
+        variables={"applicationIds": [archived_failed.id]},
+        token=token,
+    )
+
+    assert "errors" not in apply_result
+    payload = apply_result["data"]["applySelectedApplications"]
+    assert payload["runId"] is None
+    assert payload["acceptedApplicationIds"] == []
+    assert payload["applications"] == []
+    assert payload["skipped"] == [
+        {
+            "applicationId": archived_failed.id,
+            "reason": "archived",
+            "status": "failed",
+        }
+    ]
+
+    fake_cloud = test_client.app.state.test_fake_cloud_client
+    assert fake_cloud.apply_run_starts == 0
+
+
 def test_graphql_mark_application_applied_rejects_archived_application(
     test_client: TestClient,
 ) -> None:

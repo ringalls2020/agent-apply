@@ -88,7 +88,7 @@ function ApplicationsInner() {
   useEffect(() => {
     if (!meData?.me || defaultFiltersApplied) return;
     if (!meData.me.autosubmitEnabled) {
-      setFilters((current) => ({ ...current, statuses: ["review", "viewed"] }));
+      setFilters((current) => ({ ...current, statuses: ["review", "viewed", "failed"] }));
     }
     setDefaultFiltersApplied(true);
   }, [defaultFiltersApplied, meData]);
@@ -250,7 +250,7 @@ function ApplicationsInner() {
     setSelectionError("");
 
     if (!selectedIds.length) {
-      setSelectionError("Select at least one review/viewed application first.");
+      setSelectionError("Select at least one review/viewed/failed application first.");
       return;
     }
 
@@ -309,7 +309,7 @@ function ApplicationsInner() {
   const clearFilters = () => {
     const base = defaultFilters();
     if (!profile?.autosubmitEnabled) {
-      base.statuses = ["review", "viewed"];
+      base.statuses = ["review", "viewed", "failed"];
     }
     setFilters(base);
     setOffset(0);
