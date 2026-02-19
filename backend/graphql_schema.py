@@ -481,7 +481,14 @@ class Mutation(graphene.ObjectType):
     login = Login.Field()
     run_agent = graphene.List(graphene.NonNull(ApplicationRecordType), required=True)
     update_preferences = graphene.Field(PreferenceType, interests=graphene.List(graphene.NonNull(graphene.String), required=True), locations=graphene.List(graphene.NonNull(graphene.String)), seniority=graphene.String(), applications_per_day=graphene.Int(default_value=25), required=True)
-    upload_resume = graphene.Field(ResumeType, filename=graphene.String(required=True), resume_text=graphene.String(required=True), required=True)
+    upload_resume = graphene.Field(
+        ResumeType,
+        filename=graphene.String(required=True),
+        resume_text=graphene.String(),
+        file_content_base64=graphene.String(),
+        file_mime_type=graphene.String(),
+        required=True,
+    )
     apply_selected_applications = graphene.Field(BulkApplyResponseType, application_ids=graphene.List(graphene.NonNull(graphene.ID), required=True), required=True)
     mark_application_viewed = graphene.Field(ApplicationRecordType, application_id=graphene.ID(required=True), required=True)
     mark_application_applied = graphene.Field(ApplicationRecordType, application_id=graphene.ID(required=True), required=True)
@@ -507,12 +514,24 @@ class Mutation(graphene.ObjectType):
         except Exception as exc:
             _handle_exception(exc)
 
-    def resolve_upload_resume(self, info, filename: str, resume_text: str):
+    def resolve_upload_resume(
+        self,
+        info,
+        filename: str,
+        resume_text: str | None = None,
+        file_content_base64: str | None = None,
+        file_mime_type: str | None = None,
+    ):
         request = info.context["request"]
         user_id = authenticated_user_id_from_request(request)
         result = request.app.state.orchestrator.upsert_resume(
             user_id=user_id,
-            payload=ResumeUpsertRequest(filename=filename, resume_text=resume_text),
+            payload=ResumeUpsertRequest(
+                filename=filename,
+                resume_text=resume_text,
+                file_content_base64=file_content_base64,
+                file_mime_type=file_mime_type,
+            ),
         )
         return _to_dict(result)
 

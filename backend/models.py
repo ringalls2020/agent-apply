@@ -193,7 +193,9 @@ class ApplicationProfileResponse(BaseModel):
 
 class ResumeUpsertRequest(BaseModel):
     filename: str
-    resume_text: str
+    resume_text: str | None = None
+    file_content_base64: str | None = None
+    file_mime_type: str | None = None
 
 
 class ResumeResponse(BaseModel):
@@ -201,6 +203,9 @@ class ResumeResponse(BaseModel):
     user_id: str
     filename: str
     resume_text: str
+    file_mime_type: str | None = None
+    file_size_bytes: int | None = None
+    file_sha256: str | None = None
     updated_at: datetime
 
 

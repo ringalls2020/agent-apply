@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import sys
 import types
 from typing import Any
@@ -47,6 +48,40 @@ class _FakePage:
 
     def click(self, *_args: Any, **_kwargs: Any) -> None:
         raise AssertionError("Submit click should never be invoked in dev review mode")
+
+
+class _FakeFileInput:
+    def __init__(self) -> None:
+        self.uploaded_path: str | None = None
+
+    async def is_visible(self, timeout: int = 200) -> bool:
+        del timeout
+        return True
+
+    async def set_input_files(self, path: str, timeout: int = 0) -> None:
+        del timeout
+        self.uploaded_path = path
+
+
+class _FakeLocator:
+    def __init__(self, candidates: list[Any]) -> None:
+        self._candidates = candidates
+
+    async def count(self) -> int:
+        return len(self._candidates)
+
+    def nth(self, index: int) -> Any:
+        return self._candidates[index]
+
+
+class _FakeUploadPage:
+    def __init__(self, file_input: _FakeFileInput) -> None:
+        self._file_input = file_input
+
+    def locator(self, selector: str) -> _FakeLocator:
+        if selector == "input[type='file']#resume":
+            return _FakeLocator([self._file_input])
+        return _FakeLocator([])
 
 
 class _FakeContext:
@@ -182,8 +217,8 @@ def test_dev_review_mode_uses_manual_submit_branch_without_submit_click(monkeypa
     monkeypatch.setattr(executor, "_await_manual_submit", _manual_submit)
     monkeypatch.setattr(
         executor,
-        "_standard_terminal_attempt",
-        lambda _attempt: (_ for _ in ()).throw(AssertionError("Standard terminal branch should not run")),
+        "_submit_and_confirm",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("Submit-and-confirm branch should not run")),
     )
 
     result = asyncio.run(executor.complete_attempt(attempt=_build_attempt(), request=_build_request()))
@@ -220,9 +255,103 @@ def test_fill_application_form_uses_synthesized_profile_values(monkeypatch) -> N
     assert "jane@example.com" in text_values
     assert "5551234567" in text_values
     assert "https://linkedin.com/in/janedoe" in text_values
-    assert any("I am Jane Doe" in value for value in text_values)
+    assert not any("I am Jane Doe" in value for value in text_values)
     assert False in boolean_values
     assert True in boolean_values
+
+
+def test_non_dev_mode_uses_submit_and_confirm_branch(monkeypatch) -> None:
+    fake_page = _FakePage(url="https://jobs.example.com/apply/backend")
+    fake_chromium = _FakeChromium(fake_page)
+    monkeypatch.setitem(
+        sys.modules,
+        "playwright.async_api",
+        types.SimpleNamespace(async_playwright=lambda: _FakeAsyncPlaywright(fake_chromium)),
+    )
+
+    executor = PlaywrightApplyExecutor(
+        synthesizer=FormAnswerSynthesizer(),
+        dev_review_mode=False,
+        submit_timeout_seconds=30,
+        poll_interval_ms=50,
+        slow_mo_ms=0,
+    )
+    submitted = {"called": False}
+
+    async def _fill_application_form(*, page: Any, request: ApplyRunRequest) -> None:
+        del page, request
+        return None
+
+    async def _submit_and_confirm(*, page: Any, attempt: ApplyAttemptRecord) -> ApplyAttemptRecord:
+        del page
+        submitted["called"] = True
+        return attempt.model_copy(
+            update={
+                "status": ApplyAttemptStatus.submitted,
+                "submitted_at": utc_now(),
+                "failure_code": None,
+                "failure_reason": None,
+            }
+        )
+
+    monkeypatch.setattr(executor, "_fill_application_form", _fill_application_form)
+    monkeypatch.setattr(executor, "_submit_and_confirm", _submit_and_confirm)
+    monkeypatch.setattr(
+        executor,
+        "_await_manual_submit",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("Manual review branch should not run")),
+    )
+
+    result = asyncio.run(executor.complete_attempt(attempt=_build_attempt(), request=_build_request()))
+    assert result.status == ApplyAttemptStatus.submitted
+    assert submitted["called"] is True
+
+
+def test_non_dev_submit_blocks_when_required_fields_unresolved(monkeypatch) -> None:
+    executor = PlaywrightApplyExecutor(
+        synthesizer=FormAnswerSynthesizer(),
+        dev_review_mode=False,
+        submit_timeout_seconds=5,
+        poll_interval_ms=50,
+    )
+    page = _FakePage(url="https://jobs.example.com/apply/backend")
+
+    async def _unresolved(_page: Any) -> list[str]:
+        return ["Email", "Privacy Notice"]
+
+    monkeypatch.setattr(executor, "_audit_required_fields", _unresolved)
+
+    result = asyncio.run(executor._submit_and_confirm(page=page, attempt=_build_attempt()))
+    assert result.status == ApplyAttemptStatus.blocked
+    assert result.failure_code == FailureCode.form_validation_failed
+    assert "Email" in (result.failure_reason or "")
+
+
+def test_resume_upload_sets_input_files_when_resume_file_present() -> None:
+    executor = PlaywrightApplyExecutor(
+        synthesizer=FormAnswerSynthesizer(),
+        dev_review_mode=True,
+    )
+    file_input = _FakeFileInput()
+    page = _FakeUploadPage(file_input=file_input)
+    resume_bytes = b"resume content"
+    request = _build_request().model_copy(
+        update={
+            "profile_payload": {
+                **_build_request().profile_payload,
+                "resume_file": {
+                    "filename": "resume.txt",
+                    "content_base64": base64.b64encode(resume_bytes).decode("ascii"),
+                    "size_bytes": len(resume_bytes),
+                },
+            }
+        }
+    )
+
+    uploaded = asyncio.run(executor._upload_resume_file(page=page, request=request))
+
+    assert uploaded is True
+    assert file_input.uploaded_path is not None
 
 
 def test_manual_submit_detection_marks_submitted_from_confirmation_url(monkeypatch) -> None:

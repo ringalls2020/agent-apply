@@ -1,7 +1,7 @@
 import os
 import logging
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -103,3 +103,40 @@ def create_session_factory(engine: Engine) -> sessionmaker:
         autocommit=False,
         expire_on_commit=False,
     )
+
+
+def ensure_runtime_schema_compatibility(engine: Engine) -> int:
+    """
+    Add backwards-compatible columns required by newer code paths when running
+    against databases that were created before the latest migrations.
+    """
+    inspector = inspect(engine)
+    if not inspector.has_table("resumes"):
+        return 0
+
+    existing_columns = {column["name"] for column in inspector.get_columns("resumes")}
+    dialect = engine.dialect.name
+    bytes_type = "BYTEA" if dialect == "postgresql" else "BLOB"
+
+    statements: list[str] = []
+    if "file_bytes" not in existing_columns:
+        statements.append(f"ALTER TABLE resumes ADD COLUMN file_bytes {bytes_type}")
+    if "file_mime_type" not in existing_columns:
+        statements.append("ALTER TABLE resumes ADD COLUMN file_mime_type VARCHAR(255)")
+    if "file_size_bytes" not in existing_columns:
+        statements.append("ALTER TABLE resumes ADD COLUMN file_size_bytes INTEGER")
+    if "file_sha256" not in existing_columns:
+        statements.append("ALTER TABLE resumes ADD COLUMN file_sha256 VARCHAR(64)")
+
+    if not statements:
+        return 0
+
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
+
+    logger.info(
+        "runtime_schema_compatibility_applied",
+        extra={"table": "resumes", "columns_added": len(statements)},
+    )
+    return len(statements)

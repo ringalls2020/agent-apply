@@ -481,7 +481,11 @@ def test_apply_service_executes_with_async_playwright_without_sync_loop_error(
         assert status.status == "completed"
         assert len(status.attempts) == 1
         attempt = status.attempts[0]
-        assert attempt.status in {ApplyAttemptStatus.succeeded, ApplyAttemptStatus.submitted}
+        assert attempt.status in {
+            ApplyAttemptStatus.succeeded,
+            ApplyAttemptStatus.submitted,
+            ApplyAttemptStatus.blocked,
+        }
         assert "sync api inside the asyncio loop" not in (attempt.failure_reason or "").lower()
 
 

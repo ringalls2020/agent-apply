@@ -17,6 +17,17 @@ type MeQuery = {
   } | null;
 };
 
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    const chunk = bytes.subarray(offset, offset + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
 function ResumeInner() {
   const { isCheckingAuth, isAuthenticated } = useRequireAuth();
   const [notice, setNotice] = useState<{ variant: "success" | "error"; message: string } | null>(null);
@@ -55,7 +66,7 @@ function ResumeInner() {
         <label className="relative flex cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed border-accent/45 bg-accent/5 p-5 text-center transition duration-250 hover:bg-accent/10 focus-within:ring-2 focus-within:ring-accent/40 sm:p-7">
           <input
             type="file"
-            accept=".txt,.md"
+            accept=".txt,.md,.pdf,.doc,.docx"
             className="absolute inset-0 cursor-pointer opacity-0"
             onChange={async (event) => {
               const file = event.target.files?.[0];
@@ -64,8 +75,18 @@ function ResumeInner() {
               setNotice(null);
 
               try {
-                const text = await file.text();
-                await uploadResume({ variables: { filename: file.name, resumeText: text } });
+                const lowerName = file.name.toLowerCase();
+                const shouldReadText = lowerName.endsWith(".txt") || lowerName.endsWith(".md");
+                const resumeText = shouldReadText ? await file.text() : null;
+                const fileContentBase64 = arrayBufferToBase64(await file.arrayBuffer());
+                await uploadResume({
+                  variables: {
+                    filename: file.name,
+                    resumeText,
+                    fileContentBase64,
+                    fileMimeType: file.type || null,
+                  },
+                });
                 await refetch();
                 setNotice({ variant: "success", message: "Resume uploaded successfully." });
               } catch (err: unknown) {
@@ -78,7 +99,9 @@ function ResumeInner() {
           />
 
           <p className="text-sm font-semibold text-accentSoft text-wrap-anywhere">Drop a resume file or click to browse</p>
-          <p className="mt-1 text-xs text-muted text-wrap-anywhere">Accepted formats: .txt, .md</p>
+          <p className="mt-1 text-xs text-muted text-wrap-anywhere">
+            Accepted formats: .txt, .md, .pdf, .doc, .docx
+          </p>
         </label>
 
         <div className="rounded-xl2 border border-border/80 bg-surfaceAlt/55 p-3.5 sm:p-4">

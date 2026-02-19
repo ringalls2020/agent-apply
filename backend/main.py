@@ -20,6 +20,7 @@ from .db import (
     Base,
     create_db_engine,
     create_session_factory,
+    ensure_runtime_schema_compatibility,
     get_database_url,
     redact_database_url,
 )
@@ -70,6 +71,14 @@ def create_app(
             logger.info("db_schema_initialization_started")
             Base.metadata.create_all(bind=app.state.engine)
             logger.info("db_schema_initialization_completed")
+        try:
+            columns_added = ensure_runtime_schema_compatibility(app.state.engine)
+            logger.info(
+                "db_runtime_schema_compatibility_checked",
+                extra={"columns_added": columns_added},
+            )
+        except Exception:
+            logger.exception("db_runtime_schema_compatibility_failed")
         try:
             yield
         finally:
