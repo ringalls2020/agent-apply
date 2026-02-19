@@ -181,6 +181,14 @@ export const PROFILE = gql`
   }
 `;
 
+export const PROFILE_SETUP_STATUS = gql`
+  query ProfileSetupStatus {
+    profile {
+      userId
+    }
+  }
+`;
+
 export const UPDATE_PROFILE = gql`
   mutation UpdateProfile($input: ApplicationProfileInput!) {
     updateProfile(input: $input) {

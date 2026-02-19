@@ -154,6 +154,7 @@ def _seed_profile(
     *,
     token: str,
     applications_per_day: int = 3,
+    include_application_profile: bool = False,
 ) -> None:
     preferences_result = _graphql(
         client,
@@ -188,8 +189,24 @@ def _seed_profile(
         },
         token=token,
     )
+    profile_result = None
+    if include_application_profile:
+        profile_result = _graphql(
+            client,
+            """
+            mutation UpdateProfile($input: ApplicationProfileInput!) {
+              updateProfile(input: $input) {
+                autosubmitEnabled
+              }
+            }
+            """,
+            {"input": {"autosubmitEnabled": False}},
+            token=token,
+        )
     assert "errors" not in preferences_result
     assert "errors" not in resume_result
+    if profile_result is not None:
+        assert "errors" not in profile_result
 
 
 def test_graphql_upload_resume_supports_base64_text_payload(test_client: TestClient) -> None:
@@ -497,6 +514,20 @@ def test_graphql_run_agent_mutation_returns_applications(test_client: TestClient
     )
     token = signup["token"]
     _seed_profile(test_client, token=token, applications_per_day=2)
+
+    profile_result = _graphql(
+        test_client,
+        """
+        query Profile {
+          profile {
+            autosubmitEnabled
+          }
+        }
+        """,
+        token=token,
+    )
+    assert "errors" in profile_result
+    assert profile_result["errors"][0]["message"] == "Profile not found"
 
     result = _graphql(
         test_client,

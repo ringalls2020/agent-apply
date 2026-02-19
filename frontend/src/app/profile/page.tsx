@@ -1,11 +1,13 @@
 "use client";
 
+import Link from "next/link";
 import { useMutation, useQuery } from "@apollo/client";
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 
 import { AppShell } from "@/components/layout/AppShell";
 import { Nav } from "@/components/Nav";
-import { Button } from "@/components/ui/Button";
+import { Button, buttonVariants } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { FormField } from "@/components/ui/FormField";
 import { InlineAlert } from "@/components/ui/InlineAlert";
@@ -103,6 +105,12 @@ const disabilityOptions = [
   "not_listed",
 ];
 
+const setupStepLabelByKey: Record<string, string> = {
+  profile: "save profile",
+  resume: "upload resume",
+  interests: "set interests",
+};
+
 function defaultState(): FormState {
   return {
     autosubmitEnabled: false,
@@ -130,11 +138,23 @@ function defaultState(): FormState {
 }
 
 function ProfileInner() {
+  const searchParams = useSearchParams();
   const { isCheckingAuth, isAuthenticated } = useRequireAuth();
   const { data, loading, refetch } = useQuery<ProfileQuery>(PROFILE, { skip: !isAuthenticated });
   const [updateProfile, { loading: saving }] = useMutation(UPDATE_PROFILE);
   const [form, setForm] = useState<FormState>(defaultState);
   const [notice, setNotice] = useState<{ variant: "success" | "error"; message: string } | null>(null);
+  const setupRequired = searchParams.get("required") === "setup";
+  const rawNextPath = searchParams.get("next");
+  const safeNextPath = rawNextPath && rawNextPath.startsWith("/") ? rawNextPath : "/applications";
+  const missingSetupSteps = useMemo(
+    () =>
+      (searchParams.get("missing") ?? "")
+        .split(",")
+        .map((step) => step.trim().toLowerCase())
+        .filter((step) => step in setupStepLabelByKey),
+    [searchParams],
+  );
 
   useEffect(() => {
     if (!data?.profile) return;
@@ -208,6 +228,39 @@ function ProfileInner() {
             Configure autosubmit behavior and provide answers used by autonomous application workflows.
           </p>
         </div>
+
+        {setupRequired && (
+          <InlineAlert variant="warning">
+            <div className="space-y-2">
+              <p>Finish setup before opening your applications dashboard.</p>
+              <p className="text-xs text-wrap-anywhere">
+                Required steps:{" "}
+                {missingSetupSteps.length
+                  ? missingSetupSteps.map((step) => setupStepLabelByKey[step]).join(", ")
+                  : "save profile"}
+                .
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {missingSetupSteps.includes("resume") && (
+                  <Link href="/resume" className={buttonVariants({ variant: "secondary", size: "sm" })}>
+                    Upload resume
+                  </Link>
+                )}
+                {missingSetupSteps.includes("interests") && (
+                  <Link href="/preferences" className={buttonVariants({ variant: "secondary", size: "sm" })}>
+                    Update interests
+                  </Link>
+                )}
+                <Link href={safeNextPath} className={buttonVariants({ variant: "ghost", size: "sm" })}>
+                  Back to applications
+                </Link>
+              </div>
+              {missingSetupSteps.includes("profile") && (
+                <p className="text-xs text-wrap-anywhere">Save your profile below to complete setup.</p>
+              )}
+            </div>
+          </InlineAlert>
+        )}
 
         {loading ? (
           <LoadingState label="Loading profile..." className="min-h-[120px]" />

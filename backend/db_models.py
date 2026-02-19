@@ -31,7 +31,7 @@ class ApplicationRecordRow(Base):
     user_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
 
-    opportunity_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    opportunity_id: Mapped[str] = mapped_column(String(128), nullable=False)
     opportunity_title: Mapped[str] = mapped_column(String(255), nullable=False)
     opportunity_company: Mapped[str] = mapped_column(String(255), nullable=False)
     opportunity_url: Mapped[str] = mapped_column(Text, nullable=False)

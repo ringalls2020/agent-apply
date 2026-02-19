@@ -111,22 +111,38 @@ def ensure_runtime_schema_compatibility(engine: Engine) -> int:
     against databases that were created before the latest migrations.
     """
     inspector = inspect(engine)
-    if not inspector.has_table("resumes"):
-        return 0
-
-    existing_columns = {column["name"] for column in inspector.get_columns("resumes")}
     dialect = engine.dialect.name
-    bytes_type = "BYTEA" if dialect == "postgresql" else "BLOB"
 
     statements: list[str] = []
-    if "file_bytes" not in existing_columns:
-        statements.append(f"ALTER TABLE resumes ADD COLUMN file_bytes {bytes_type}")
-    if "file_mime_type" not in existing_columns:
-        statements.append("ALTER TABLE resumes ADD COLUMN file_mime_type VARCHAR(255)")
-    if "file_size_bytes" not in existing_columns:
-        statements.append("ALTER TABLE resumes ADD COLUMN file_size_bytes INTEGER")
-    if "file_sha256" not in existing_columns:
-        statements.append("ALTER TABLE resumes ADD COLUMN file_sha256 VARCHAR(64)")
+
+    if inspector.has_table("resumes"):
+        existing_columns = {column["name"] for column in inspector.get_columns("resumes")}
+        bytes_type = "BYTEA" if dialect == "postgresql" else "BLOB"
+        if "file_bytes" not in existing_columns:
+            statements.append(f"ALTER TABLE resumes ADD COLUMN file_bytes {bytes_type}")
+        if "file_mime_type" not in existing_columns:
+            statements.append("ALTER TABLE resumes ADD COLUMN file_mime_type VARCHAR(255)")
+        if "file_size_bytes" not in existing_columns:
+            statements.append("ALTER TABLE resumes ADD COLUMN file_size_bytes INTEGER")
+        if "file_sha256" not in existing_columns:
+            statements.append("ALTER TABLE resumes ADD COLUMN file_sha256 VARCHAR(64)")
+
+    # Older deployments may still have opportunity_id at VARCHAR(36),
+    # which truncates provider-prefixed external IDs (for example lever-*).
+    if dialect == "postgresql" and inspector.has_table("applications"):
+        application_columns = {
+            column["name"]: column for column in inspector.get_columns("applications")
+        }
+        opportunity_column = application_columns.get("opportunity_id")
+        opportunity_length = (
+            getattr(opportunity_column.get("type"), "length", None)
+            if opportunity_column is not None
+            else None
+        )
+        if isinstance(opportunity_length, int) and opportunity_length < 128:
+            statements.append(
+                "ALTER TABLE applications ALTER COLUMN opportunity_id TYPE VARCHAR(128)"
+            )
 
     if not statements:
         return 0
@@ -137,6 +153,6 @@ def ensure_runtime_schema_compatibility(engine: Engine) -> int:
 
     logger.info(
         "runtime_schema_compatibility_applied",
-        extra={"table": "resumes", "columns_added": len(statements)},
+        extra={"changes_applied": len(statements)},
     )
     return len(statements)

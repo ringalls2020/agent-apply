@@ -2,6 +2,7 @@
 
 import { useMutation, useQuery } from "@apollo/client";
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import { ApplicationMobileCard } from "@/components/applications/ApplicationMobileCard";
 import { ApplicationsBulkActions } from "@/components/applications/ApplicationsBulkActions";
@@ -33,6 +34,7 @@ import {
   MARK_APPLICATION_APPLIED,
   MARK_APPLICATION_VIEWED,
   ME,
+  PROFILE_SETUP_STATUS,
   RUN_AGENT,
 } from "@/graphql/operations";
 import { useRequireAuth } from "@/lib/useRequireAuth";
@@ -50,11 +52,18 @@ type UserProfile = {
   fullName: string;
   interests: string[];
   applicationsPerDay: number;
+  resumeFilename: string | null;
   autosubmitEnabled: boolean;
 };
 
 type MeQuery = {
   me: UserProfile | null;
+};
+
+type ProfileSetupStatusQuery = {
+  profile: {
+    userId: string;
+  };
 };
 
 type ApplySelectedApplicationsResponse = {
@@ -70,6 +79,7 @@ type ApplySelectedApplicationsResponse = {
 };
 
 function ApplicationsInner() {
+  const router = useRouter();
   const runAgentEnabled = process.env.NEXT_PUBLIC_ENABLE_RUN_AGENT_DEV !== "false";
   const { isCheckingAuth, isAuthenticated } = useRequireAuth();
   const [error, setError] = useState("");
@@ -82,8 +92,63 @@ function ApplicationsInner() {
   const [optimisticStatuses, setOptimisticStatuses] = useState<Record<string, string>>({});
   const [rowActionLoading, setRowActionLoading] = useState<Record<string, boolean>>({});
   const [defaultFiltersApplied, setDefaultFiltersApplied] = useState(false);
+  const [isGateRedirecting, setIsGateRedirecting] = useState(false);
 
-  const { data: meData } = useQuery<MeQuery>(ME, { skip: !isAuthenticated });
+  const { data: meData, loading: meLoading } = useQuery<MeQuery>(ME, {
+    skip: !isAuthenticated,
+    fetchPolicy: "network-only",
+  });
+  const {
+    data: profileSetupData,
+    loading: profileSetupLoading,
+    error: profileSetupError,
+  } = useQuery<ProfileSetupStatusQuery>(PROFILE_SETUP_STATUS, {
+    skip: !isAuthenticated,
+    fetchPolicy: "network-only",
+  });
+  const profile = meData?.me;
+  const profileNotFound = profileSetupError?.graphQLErrors.some(
+    (graphQLError) => graphQLError.message === "Profile not found",
+  );
+  const hasUnknownProfileGateError = Boolean(profileSetupError) && !profileNotFound;
+  const profileExists = profileSetupData?.profile?.userId ? true : profileNotFound ? false : null;
+  const missingSetupSteps = useMemo(() => {
+    if (!profile || profileExists === null) return [];
+
+    const steps: string[] = [];
+    if (!profileExists) steps.push("profile");
+    const hasResume = Boolean(profile.resumeFilename?.trim());
+    if (!hasResume) steps.push("resume");
+    const hasInterests = profile.interests.some((interest) => interest.trim().length > 0);
+    if (!hasInterests) steps.push("interests");
+    return steps;
+  }, [profile, profileExists]);
+  const isSetupComplete = Boolean(profile && missingSetupSteps.length === 0);
+
+  useEffect(() => {
+    if (!isAuthenticated || !profile || profileExists === null || hasUnknownProfileGateError) {
+      return;
+    }
+    if (!missingSetupSteps.length) {
+      setIsGateRedirecting(false);
+      return;
+    }
+
+    const params = new URLSearchParams({
+      required: "setup",
+      next: "/applications",
+      missing: missingSetupSteps.join(","),
+    });
+    setIsGateRedirecting(true);
+    router.replace(`/profile?${params.toString()}`);
+  }, [
+    hasUnknownProfileGateError,
+    isAuthenticated,
+    missingSetupSteps,
+    profile,
+    profileExists,
+    router,
+  ]);
 
   useEffect(() => {
     if (!meData?.me || defaultFiltersApplied) return;
@@ -118,7 +183,7 @@ function ApplicationsInner() {
   }, [filters]);
 
   const { data, loading, refetch } = useQuery<ApplicationsSearchQuery>(APPLICATIONS_SEARCH, {
-    skip: !isAuthenticated,
+    skip: !isAuthenticated || !isSetupComplete,
     variables: {
       filter: filterInput,
       limit: PAGE_SIZE,
@@ -137,7 +202,6 @@ function ApplicationsInner() {
   const totalCount = data?.applicationsSearch.totalCount ?? 0;
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
-  const profile = meData?.me;
 
   useEffect(() => {
     setSelectedIds((current) => current.filter((id) => apps.some((app) => app.id === id)));
@@ -439,6 +503,29 @@ function ApplicationsInner() {
     return (
       <AppShell>
         <LoadingState label="Redirecting to login..." />
+      </AppShell>
+    );
+  }
+
+  if (hasUnknownProfileGateError) {
+    return (
+      <AppShell>
+        <Nav />
+        <InlineAlert variant="error" className="mx-auto max-w-3xl">
+          Could not verify profile setup right now. Please refresh the page and try again.
+        </InlineAlert>
+      </AppShell>
+    );
+  }
+
+  if (meLoading || profileSetupLoading || !profile || profileExists === null || isGateRedirecting || missingSetupSteps.length > 0) {
+    const label =
+      isGateRedirecting || missingSetupSteps.length > 0
+        ? "Redirecting to profile setup..."
+        : "Checking profile setup...";
+    return (
+      <AppShell>
+        <LoadingState label={label} />
       </AppShell>
     );
   }
