@@ -19,6 +19,18 @@ Monorepo for a two-plane job automation system:
 - **Main API**
   - GraphQL operations are served from `POST /graphql`; `/admin` remains available.
 
+## Agent Instructions
+
+Agent guidance is scoped by `AGENTS.md` files:
+
+- Repository-wide defaults: [`AGENTS.md`](AGENTS.md)
+- Backend-specific rules: [`backend/AGENTS.md`](backend/AGENTS.md)
+- Cloud automation-specific rules: [`cloud_automation/AGENTS.md`](cloud_automation/AGENTS.md)
+- Frontend-specific rules: [`frontend/AGENTS.md`](frontend/AGENTS.md)
+- Test policy and regression rules: [`tests/AGENTS.md`](tests/AGENTS.md)
+
+Precedence follows directory specificity: the closest `AGENTS.md` to the file being changed takes priority, and repository-root rules apply as defaults.
+
 ## Local setup
 
 ```bash
