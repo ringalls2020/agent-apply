@@ -33,6 +33,13 @@ Copy env file:
 cp .env.example .env
 ```
 
+Create local PostgreSQL databases (one-time):
+
+```bash
+createdb agent_apply
+createdb jobs_intel
+```
+
 ## Run main backend
 
 ```bash

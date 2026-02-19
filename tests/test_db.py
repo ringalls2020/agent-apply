@@ -2,11 +2,16 @@ from backend.db import DEFAULT_DATABASE_URL, get_database_url
 
 
 def test_get_database_url_prefers_override(monkeypatch) -> None:
-    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///./from_env.db")
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+psycopg://postgres@localhost:5432/from_env",
+    )
 
-    result = get_database_url("sqlite+pysqlite:///./from_override.db")
+    result = get_database_url(
+        "postgresql+psycopg://postgres@localhost:5432/from_override",
+    )
 
-    assert result == "sqlite+pysqlite:///./from_override.db"
+    assert result == "postgresql+psycopg://postgres@localhost:5432/from_override"
 
 
 def test_get_database_url_uses_default_when_env_missing(monkeypatch) -> None:

@@ -15,7 +15,7 @@ FastAPI service that is now the **system of record** for:
 - FastAPI
 - SQLAlchemy
 - Alembic
-- PostgreSQL/SQLite
+- PostgreSQL
 - HTTPX (cloud API client)
 
 ## Key endpoints
@@ -59,7 +59,7 @@ Callback requirements:
 
 ### Database
 
-- `DATABASE_URL` (default: `sqlite+pysqlite:///./agent_apply.db`)
+- `DATABASE_URL` (default: `postgresql+psycopg://postgres@localhost:5432/agent_apply`)
 - `ENABLE_MAIN_SCHEMA_CREATE` (default: `true` in local/dev/test, `false` otherwise)
 
 ### Logging
@@ -105,6 +105,12 @@ Callback requirements:
 - `USER_PROFILE_ENCRYPTION_KEY` (required outside dev/test to encrypt sensitive profile fields)
 
 ## Local run
+
+Create the database once:
+
+```bash
+createdb agent_apply
+```
 
 ```bash
 uvicorn backend.main:app --reload --port 8000

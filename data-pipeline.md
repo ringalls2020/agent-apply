@@ -63,7 +63,7 @@ User clicks "Run Agent" in frontend
 │ ├─ Returns top N ranked matches
 │ └─ Writes → match_results, sets match_runs.status=completed
 │
-└─ Backend stores matches as application_attempts in agent_apply.db
+└─ Backend stores matches as application_attempts in PostgreSQL (agent_apply)
 
 STAGE 6: Apply to Jobs
 ───────────────────────

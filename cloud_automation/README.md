@@ -27,7 +27,7 @@ All `/v1/*` endpoints require service JWT auth.
 
 ### Database
 
-- `JOBS_DATABASE_URL` (default: `sqlite+pysqlite:///./jobs_intel.db`)
+- `JOBS_DATABASE_URL` (default: `postgresql+psycopg://postgres@localhost:5432/jobs_intel`)
 - `ENABLE_CLOUD_SCHEMA_CREATE` (default: `true` in local/dev/test, `false` otherwise)
 
 ### Auth (main -> cloud)
@@ -118,6 +118,12 @@ Discovery refresh queue flow:
 - `CLOUD_HTTP_TIMEOUT_SECONDS` (default: `20`; reused by callback emitter, OpenAI, crawler, and live feeds)
 
 ## Local run
+
+Create the database once:
+
+```bash
+createdb jobs_intel
+```
 
 ```bash
 uvicorn cloud_automation.main:app --reload --port 8100

@@ -29,7 +29,7 @@ POST /graphql (JSON)
 ▼
 ┌─────────────────────────────────────────────────────────────────────────────────┐
 │ MAIN BACKEND (FastAPI :8000) │
-│ DB: agent_apply.db │
+│ DB: PostgreSQL (agent_apply) │
 │ │
 │ Endpoints: │
 │ POST /graphql ─────── Graphene schema (queries + mutations) │
@@ -71,7 +71,7 @@ CLOUD_AUTOMATION_SIGNING_SECRET
 ▼
 ┌─────────────────────────────────────────────────────────────────────────────────┐
 │ CLOUD AUTOMATION API (FastAPI :8100) │
-│ DB: jobs_intel.db │
+│ DB: PostgreSQL (jobs_intel) │
 │ │
 │ Endpoints: │
 │ POST /v1/discovery/kick ──── enqueues discovery_refresh_requests row │
@@ -87,7 +87,7 @@ CLOUD_AUTOMATION_SIGNING_SECRET
 │ NOTE: This API only ENQUEUES work. Workers do the processing. │
 └──────────────────┬──────────────────────────────────────────────────────────────┘
 │
-│ All workers share jobs_intel.db (SQLite)
+│ All workers share the jobs_intel PostgreSQL database
 │ All workers poll DB tables for queued rows
 │
 ┌─────────────┼──────────────┬──────────────────┬───────────────────┐
