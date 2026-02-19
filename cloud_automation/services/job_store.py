@@ -300,6 +300,9 @@ class JobIntelStore(LegacyJobIntelStore):
                         last_seen_at=now,
                     )
                     session.add(row)
+                    # Session autoflush is disabled; ensure the token parent row is
+                    # persisted before inserting evidence rows that reference it.
+                    session.flush()
                     inserted += 1
                 else:
                     row.last_seen_at = now
