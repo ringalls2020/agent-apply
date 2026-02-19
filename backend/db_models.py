@@ -143,6 +143,272 @@ class ResumeRow(Base):
     )
 
 
+class PreferenceProfileRow(Base):
+    __tablename__ = "preference_profile"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "version",
+            name="uq_preference_profile_user_version",
+        ),
+        Index("ix_preference_profile_user_status", "user_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
+    semantic_vector_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
+class PreferenceNodeRow(Base):
+    __tablename__ = "preference_node"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "node_type",
+            "canonical_key",
+            name="uq_preference_node_user_type_key",
+        ),
+        Index("ix_preference_node_user_type", "user_id", "node_type"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    node_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    canonical_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    attributes_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
+class PreferenceEdgeRow(Base):
+    __tablename__ = "preference_edge"
+    __table_args__ = (
+        UniqueConstraint(
+            "profile_id",
+            "node_id",
+            "relationship",
+            "source",
+            name="uq_preference_edge_profile_node_relationship_source",
+        ),
+        Index("ix_preference_edge_user_profile", "user_id", "profile_id"),
+        Index("ix_preference_edge_profile", "profile_id"),
+        Index("ix_preference_edge_node", "node_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    profile_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("preference_profile.id"),
+        nullable=False,
+    )
+    node_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("preference_node.id"),
+        nullable=False,
+    )
+    relationship: Mapped[str] = mapped_column(String(32), nullable=False, default="prefers")
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    hard_constraint: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime)
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
+class PreferenceEvidenceRow(Base):
+    __tablename__ = "preference_evidence"
+    __table_args__ = (
+        Index("ix_preference_evidence_user_node", "user_id", "node_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    resume_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("resumes.id"))
+    node_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("preference_node.id"),
+        nullable=False,
+    )
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="resume_parse")
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    extractor_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    span_ref: Mapped[str | None] = mapped_column(String(128))
+    rationale: Mapped[str | None] = mapped_column(Text)
+    metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
+class PreferenceFeedbackRow(Base):
+    __tablename__ = "preference_feedback"
+    __table_args__ = (
+        Index("ix_preference_feedback_user_created_at", "user_id", "created_at"),
+        Index(
+            "ix_preference_feedback_user_node_key_created_at",
+            "user_id",
+            "node_type",
+            "canonical_key",
+            "created_at",
+        ),
+        Index(
+            "ix_preference_feedback_user_resume_sha_created_at",
+            "user_id",
+            "resume_sha256",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    profile_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("preference_profile.id"),
+    )
+    node_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("preference_node.id"),
+    )
+    edge_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("preference_edge.id"),
+    )
+    node_type: Mapped[str | None] = mapped_column(String(64))
+    canonical_key: Mapped[str | None] = mapped_column(String(255))
+    resume_sha256: Mapped[str | None] = mapped_column(String(64))
+    decision: Mapped[str] = mapped_column(String(32), nullable=False)
+    feedback_source: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
+    detail_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
+class JobMatchExplanationRow(Base):
+    __tablename__ = "job_match_explanations"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "external_run_id",
+            "external_job_id",
+            name="uq_job_match_explanations_user_run_job",
+        ),
+        Index("ix_job_match_explanations_user_run", "user_id", "external_run_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    external_run_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    external_job_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    graph_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    semantic_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    final_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    explanations_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
+class RecommendationImpressionRow(Base):
+    __tablename__ = "recommendation_impressions"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "run_id",
+            "external_job_id",
+            name="uq_recommendation_impressions_user_run_job",
+        ),
+        Index(
+            "ix_recommendation_impressions_user_displayed_at",
+            "user_id",
+            "displayed_at",
+        ),
+        Index("ix_recommendation_impressions_user_run", "user_id", "run_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    run_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    external_job_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    title: Mapped[str | None] = mapped_column(String(255))
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    score: Mapped[float] = mapped_column(Float, nullable=False)
+    variant: Mapped[str] = mapped_column(String(32), nullable=False, default="legacy")
+    hard_constraint_violation: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    displayed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
+class RecommendationEventRow(Base):
+    __tablename__ = "recommendation_events"
+    __table_args__ = (
+        Index("ix_recommendation_events_user_occurred_at", "user_id", "occurred_at"),
+        Index(
+            "ix_recommendation_events_user_job_occurred_at",
+            "user_id",
+            "external_job_id",
+            "occurred_at",
+        ),
+        Index(
+            "ix_recommendation_events_user_event_occurred_at",
+            "user_id",
+            "event_type",
+            "occurred_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    run_id: Mapped[str | None] = mapped_column(String(64))
+    external_job_id: Mapped[str | None] = mapped_column(String(128))
+    application_id: Mapped[str | None] = mapped_column(String(64))
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    detail_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
+class EvaluationMetricSnapshotRow(Base):
+    __tablename__ = "evaluation_metric_snapshots"
+    __table_args__ = (
+        Index(
+            "ix_evaluation_metric_snapshots_user_computed_at",
+            "user_id",
+            "computed_at",
+        ),
+        Index(
+            "ix_evaluation_metric_snapshots_user_window_computed_at",
+            "user_id",
+            "window_days",
+            "computed_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    window_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    impressions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    clicks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    applications_submitted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    precision_at_5: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    precision_at_10: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    ndcg_at_10: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    hard_constraint_violation_rate: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0
+    )
+    ctr: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    apply_through_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    gate_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    gate_checks_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    computed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
 class ExternalRunRefRow(Base):
     __tablename__ = "external_run_refs"
     __table_args__ = (UniqueConstraint("run_type", "external_run_id"),)

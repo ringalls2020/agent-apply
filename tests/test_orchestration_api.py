@@ -9,7 +9,9 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 import pytest
+from sqlalchemy import select
 
+from backend.db_models import RecommendationEventRow
 from backend.main import create_app
 from backend.models import (
     ApplicationRecord,
@@ -249,3 +251,45 @@ def test_blocked_non_timeout_reason_maps_application_to_failed(
         _application_status(test_client, token=token, application_id="app-job-1")
         == "failed"
     )
+
+
+def test_callback_records_recommendation_submission_event(
+    test_client: TestClient,
+) -> None:
+    user_id, _token = _seed_user(test_client, email="callback-events@example.com")
+
+    payload = {
+        "event_type": "apply.attempt.updated",
+        "idempotency_key": "idem-callback-submitted",
+        "run_id": "apply-run-callback-submitted",
+        "user_ref": user_id,
+        "attempt": {
+            "attempt_id": "attempt-callback-submitted",
+            "external_job_id": "job-callback-1",
+            "job_url": "https://example.com/jobs/callback-1",
+            "status": "succeeded",
+            "artifacts": [],
+        },
+        "emitted_at": "2026-02-17T00:00:00Z",
+    }
+
+    callback = _post_signed_apply_callback(
+        test_client,
+        payload,
+        idempotency_key="idem-callback-submitted",
+    )
+    assert callback.status_code == 200
+    assert callback.json()["accepted"] is True
+
+    with test_client.app.state.main_store._session_factory() as session:
+        event = session.scalar(
+            select(RecommendationEventRow)
+            .where(
+                RecommendationEventRow.user_id == user_id,
+                RecommendationEventRow.run_id == "apply-run-callback-submitted",
+                RecommendationEventRow.external_job_id == "job-callback-1",
+                RecommendationEventRow.event_type == "application_submitted_callback",
+            )
+            .limit(1)
+        )
+        assert event is not None

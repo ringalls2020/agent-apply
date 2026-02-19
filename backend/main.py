@@ -99,6 +99,21 @@ def create_app(
     fastapi_app.state.agent_run_match_poll_max_attempts = config.agent_run_match_poll_max_attempts
     fastapi_app.state.enable_dev_run_agent = config.enable_dev_run_agent
     fastapi_app.state.enable_run_agent_discovery_kick = config.enable_run_agent_discovery_kick
+    fastapi_app.state.use_preference_graph_matching = config.use_preference_graph_matching
+    fastapi_app.state.enable_preference_graph_shadow_scoring = (
+        config.enable_preference_graph_shadow_scoring
+    )
+    fastapi_app.state.eval_default_window_days = config.eval_default_window_days
+    fastapi_app.state.eval_gate_thresholds = {
+        "min_impressions": config.eval_gate_min_impressions,
+        "min_runs": config.eval_gate_min_runs,
+        "precision_at_5_min": config.eval_gate_precision_at_5_min,
+        "precision_at_10_min": config.eval_gate_precision_at_10_min,
+        "ndcg_at_10_min": config.eval_gate_ndcg_at_10_min,
+        "hard_constraint_violation_max": config.eval_gate_hard_constraint_violation_max,
+        "ctr_min": config.eval_gate_ctr_min,
+        "apply_through_min": config.eval_gate_apply_through_min,
+    }
 
     # Application records store shared by GraphQL and orchestration flows.
     fastapi_app.state.store = PostgresStore(
@@ -114,6 +129,8 @@ def create_app(
         cloud_client=fastapi_app.state.cloud_client,
         application_store=fastapi_app.state.store,
         default_daily_cap=config.default_apply_daily_cap,
+        use_preference_graph_matching=config.use_preference_graph_matching,
+        enable_preference_graph_shadow_scoring=config.enable_preference_graph_shadow_scoring,
     )
 
     fastapi_app.state.callback_signing_secret = os.getenv(

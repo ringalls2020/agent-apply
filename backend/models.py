@@ -128,6 +128,78 @@ class PreferenceResponse(BaseModel):
     updated_at: datetime
 
 
+class InferredPreferenceStatus(str, Enum):
+    pending = "pending"
+    accepted = "accepted"
+    rejected = "rejected"
+    edited = "edited"
+    all = "all"
+
+
+class InferredPreferenceDecision(str, Enum):
+    accept = "accept"
+    reject = "reject"
+    edit = "edit"
+
+
+class InferredPreferenceItem(BaseModel):
+    edge_id: str
+    node_id: str
+    node_type: str
+    canonical_key: str
+    label: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    weight: float = Field(ge=0.0, le=1.0)
+    hard_constraint: bool = False
+    rationale: str | None = None
+    status: InferredPreferenceStatus = InferredPreferenceStatus.pending
+    last_decision_at: datetime | None = None
+
+
+class InferredPreferenceDecisionInput(BaseModel):
+    edge_id: str
+    decision: InferredPreferenceDecision
+    edited_label: str | None = None
+
+
+class ConfirmInferredPreferencesResponse(BaseModel):
+    accepted_count: int = 0
+    rejected_count: int = 0
+    edited_count: int = 0
+    remaining_pending_count: int = 0
+    inferred_preferences: List[InferredPreferenceItem] = Field(default_factory=list)
+
+
+class EvaluationGateStatus(str, Enum):
+    insufficient_data = "INSUFFICIENT_DATA"
+    passed = "PASS"
+    failed = "FAIL"
+
+
+class EvaluationGateCheck(BaseModel):
+    metric: str
+    actual: float
+    threshold: float
+    comparator: str
+    passed: bool
+
+
+class EvaluationMetricsResponse(BaseModel):
+    window_days: int
+    impressions: int
+    clicks: int
+    applications_submitted: int
+    precision_at_5: float
+    precision_at_10: float
+    ndcg_at_10: float
+    hard_constraint_violation_rate: float
+    ctr: float
+    apply_through_rate: float
+    gate_status: EvaluationGateStatus
+    gate_checks: List[EvaluationGateCheck] = Field(default_factory=list)
+    computed_at: datetime = Field(default_factory=utc_now)
+
+
 class CustomAnswerOverride(BaseModel):
     question_key: str = Field(min_length=1, max_length=255)
     answer: str = Field(min_length=1)

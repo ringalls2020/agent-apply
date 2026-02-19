@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from time import sleep
 from uuid import NAMESPACE_URL, uuid5
@@ -19,6 +20,10 @@ from .models import (
     ApplyTargetJob,
     BulkApplyResponse,
     BulkApplySkippedItem,
+    EvaluationMetricsResponse,
+    InferredPreferenceDecision,
+    InferredPreferenceDecisionInput,
+    InferredPreferenceStatus,
     MatchRunStartRequest,
     MatchRunStatus,
     MatchRunStatusResponse,
@@ -28,6 +33,8 @@ from .models import (
     UserUpsertRequest,
 )
 from common.time import utc_now
+
+logger = logging.getLogger(__name__)
 
 
 def _derive_application_source(job_url: str) -> str:
@@ -274,6 +281,103 @@ class ApplicationFilterInput(graphene.InputObjectType):
     sort_dir = graphene.String(default_value="desc")
 
 
+class InferredPreferenceStatusEnum(graphene.Enum):
+    class Meta:
+        name = "InferredPreferenceStatus"
+
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    EDITED = "edited"
+    ALL = "all"
+
+
+class InferredPreferenceDecisionEnum(graphene.Enum):
+    class Meta:
+        name = "InferredPreferenceDecision"
+
+    ACCEPT = "accept"
+    REJECT = "reject"
+    EDIT = "edit"
+
+
+class InferredPreferenceType(graphene.ObjectType):
+    class Meta:
+        name = "InferredPreference"
+
+    edge_id = graphene.ID(required=True)
+    node_id = graphene.ID(required=True)
+    node_type = graphene.String(required=True)
+    canonical_key = graphene.String(required=True)
+    label = graphene.String(required=True)
+    confidence = graphene.Float(required=True)
+    weight = graphene.Float(required=True)
+    hard_constraint = graphene.Boolean(required=True)
+    rationale = graphene.String()
+    status = graphene.Field(InferredPreferenceStatusEnum, required=True)
+    last_decision_at = graphene.DateTime()
+
+    def resolve_status(parent, _info):
+        raw = parent.get("status") if isinstance(parent, dict) else getattr(parent, "status", None)
+        if hasattr(raw, "value"):
+            return raw.value
+        normalized = str(raw or InferredPreferenceStatus.pending.value).strip().lower()
+        return normalized or InferredPreferenceStatus.pending.value
+
+
+class InferredPreferenceDecisionGraphQLInput(graphene.InputObjectType):
+    class Meta:
+        name = "InferredPreferenceDecisionInput"
+
+    edge_id = graphene.ID(required=True)
+    decision = graphene.Argument(InferredPreferenceDecisionEnum, required=True)
+    edited_label = graphene.String()
+
+
+class ConfirmInferredPreferencesPayloadType(graphene.ObjectType):
+    class Meta:
+        name = "ConfirmInferredPreferencesPayload"
+
+    accepted_count = graphene.Int(required=True)
+    rejected_count = graphene.Int(required=True)
+    edited_count = graphene.Int(required=True)
+    remaining_pending_count = graphene.Int(required=True)
+    inferred_preferences = graphene.List(
+        graphene.NonNull(InferredPreferenceType),
+        required=True,
+    )
+
+
+class EvaluationGateCheckType(graphene.ObjectType):
+    class Meta:
+        name = "EvaluationGateCheck"
+
+    metric = graphene.String(required=True)
+    actual = graphene.Float(required=True)
+    threshold = graphene.Float(required=True)
+    comparator = graphene.String(required=True)
+    passed = graphene.Boolean(required=True)
+
+
+class EvaluationMetricsType(graphene.ObjectType):
+    class Meta:
+        name = "EvaluationMetrics"
+
+    window_days = graphene.Int(required=True)
+    impressions = graphene.Int(required=True)
+    clicks = graphene.Int(required=True)
+    applications_submitted = graphene.Int(required=True)
+    precision_at_5 = graphene.Float(required=True)
+    precision_at_10 = graphene.Float(required=True)
+    ndcg_at_10 = graphene.Float(required=True)
+    hard_constraint_violation_rate = graphene.Float(required=True)
+    ctr = graphene.Float(required=True)
+    apply_through_rate = graphene.Float(required=True)
+    gate_status = graphene.String(required=True)
+    gate_checks = graphene.List(graphene.NonNull(EvaluationGateCheckType), required=True)
+    computed_at = graphene.DateTime(required=True)
+
+
 def _to_dict(model_or_none):
     if model_or_none is None:
         return None
@@ -288,6 +392,42 @@ def _handle_exception(exc: Exception) -> None:
     if isinstance(exc, ValueError):
         raise GraphQLError(str(exc))
     raise exc
+
+
+def _normalize_inferred_preference_status(value: object) -> InferredPreferenceStatus:
+    raw = (
+        value.value
+        if hasattr(value, "value")
+        else value.name
+        if hasattr(value, "name")
+        else value
+    )
+    normalized = str(raw or "").strip().lower()
+    if not normalized:
+        return InferredPreferenceStatus.pending
+    if normalized in {"pending", "accepted", "rejected", "edited", "all"}:
+        return InferredPreferenceStatus(normalized)
+    upper = normalized.upper()
+    if upper in {"PENDING", "ACCEPTED", "REJECTED", "EDITED", "ALL"}:
+        return InferredPreferenceStatus(upper.lower())
+    raise ValueError(f"Unsupported inferred preference status: {value}")
+
+
+def _normalize_inferred_preference_decision(value: object) -> InferredPreferenceDecision:
+    raw = (
+        value.value
+        if hasattr(value, "value")
+        else value.name
+        if hasattr(value, "name")
+        else value
+    )
+    normalized = str(raw or "").strip().lower()
+    if normalized in {"accept", "reject", "edit"}:
+        return InferredPreferenceDecision(normalized)
+    upper = normalized.upper()
+    if upper in {"ACCEPT", "REJECT", "EDIT"}:
+        return InferredPreferenceDecision(upper.lower())
+    raise ValueError(f"Unsupported inferred preference decision: {value}")
 
 
 def _build_auth_user_profile(request: Request, user_id: str):
@@ -365,6 +505,20 @@ def _run_agent(request: Request) -> list[dict]:
         for match in latest_status.results
         if _location_matches_filters(match.location, preferred_location_filters)
     ]
+    recommendation_variant = "legacy"
+    if bool(getattr(app.state, "use_preference_graph_matching", False)):
+        recommendation_variant = "graph_hybrid"
+    elif bool(getattr(app.state, "enable_preference_graph_shadow_scoring", True)):
+        recommendation_variant = "legacy_shadow"
+    try:
+        app.state.main_store.record_recommendation_impressions(
+            user_id=user_id,
+            run_id=latest_status.run_id,
+            matches=filtered_results,
+            variant=recommendation_variant,
+        )
+    except Exception:
+        logger.exception("recommendation_impression_record_failed")
 
     now = utc_now()
     existing_by_opportunity_id = {
@@ -419,6 +573,20 @@ class Query(graphene.ObjectType):
     applications = graphene.List(graphene.NonNull(ApplicationRecordType), include_archived=graphene.Boolean(default_value=False), required=True)
     applications_search = graphene.Field(ApplicationsSearchResultType, filter=graphene.Argument(ApplicationFilterInput), limit=graphene.Int(default_value=25), offset=graphene.Int(default_value=0), required=True)
     profile = graphene.Field(ApplicationProfileType, required=True)
+    inferred_preferences = graphene.List(
+        graphene.NonNull(InferredPreferenceType),
+        status=graphene.Argument(
+            InferredPreferenceStatusEnum,
+            default_value=InferredPreferenceStatusEnum.PENDING,
+        ),
+        required=True,
+    )
+    evaluation_metrics = graphene.Field(
+        EvaluationMetricsType,
+        window_days=graphene.Int(),
+        refresh=graphene.Boolean(default_value=False),
+        required=True,
+    )
 
     def resolve_me(self, info):
         request = info.context["request"]
@@ -469,6 +637,38 @@ class Query(graphene.ObjectType):
         if profile is None:
             raise GraphQLError("Profile not found")
         return _to_dict(profile)
+
+    def resolve_inferred_preferences(self, info, status=InferredPreferenceStatusEnum.PENDING):
+        request = info.context["request"]
+        user_id = authenticated_user_id_from_request(request)
+        try:
+            status_filter = _normalize_inferred_preference_status(status)
+            inferred = request.app.state.main_store.list_inferred_preferences(
+                user_id=user_id,
+                status_filter=status_filter,
+            )
+            return [_to_dict(item) for item in inferred]
+        except Exception as exc:
+            _handle_exception(exc)
+
+    def resolve_evaluation_metrics(self, info, window_days=None, refresh=False):
+        request = info.context["request"]
+        user_id = authenticated_user_id_from_request(request)
+        resolved_window_days = (
+            int(window_days)
+            if window_days is not None
+            else int(getattr(request.app.state, "eval_default_window_days", 14))
+        )
+        try:
+            metrics: EvaluationMetricsResponse = request.app.state.main_store.compute_user_evaluation_metrics(
+                user_id=user_id,
+                window_days=resolved_window_days,
+                refresh=bool(refresh),
+                gate_thresholds=getattr(request.app.state, "eval_gate_thresholds", None),
+            )
+            return _to_dict(metrics)
+        except Exception as exc:
+            _handle_exception(exc)
 
 
 class Signup(graphene.Mutation):
@@ -540,6 +740,14 @@ class Mutation(graphene.ObjectType):
     apply_selected_applications = graphene.Field(BulkApplyResponseType, application_ids=graphene.List(graphene.NonNull(graphene.ID), required=True), required=True)
     mark_application_viewed = graphene.Field(ApplicationRecordType, application_id=graphene.ID(required=True), required=True)
     mark_application_applied = graphene.Field(ApplicationRecordType, application_id=graphene.ID(required=True), required=True)
+    confirm_inferred_preferences = graphene.Field(
+        ConfirmInferredPreferencesPayloadType,
+        actions=graphene.List(
+            graphene.NonNull(InferredPreferenceDecisionGraphQLInput),
+            required=True,
+        ),
+        required=True,
+    )
     update_profile = graphene.Field(ApplicationProfileType, input=graphene.Argument(ApplicationProfileInput, required=True), required=True)
 
     def resolve_run_agent(self, info):
@@ -651,6 +859,20 @@ class Mutation(graphene.ObjectType):
             application_ids=accepted_ids,
             status=ApplicationStatus.applying,
         )
+        for application_id in accepted_ids:
+            application = existing_by_id.get(application_id)
+            if application is None:
+                continue
+            try:
+                request.app.state.main_store.record_recommendation_event(
+                    user_id=user_id,
+                    event_type="application_submitted",
+                    external_job_id=application.opportunity.id,
+                    run_id=apply_run.run_id,
+                    application_id=application.id,
+                )
+            except Exception:
+                logger.exception("recommendation_event_record_failed")
         return _to_dict(BulkApplyResponse(run_id=apply_run.run_id, status_url=apply_run.status_url, accepted_application_ids=accepted_ids, skipped=skipped, applications=updated))
 
     def resolve_mark_application_viewed(self, info, application_id: str):
@@ -671,6 +893,15 @@ class Mutation(graphene.ObjectType):
         )
         if application is None:
             raise GraphQLError("Application not found")
+        try:
+            request.app.state.main_store.record_recommendation_event(
+                user_id=user_id,
+                event_type="application_viewed",
+                external_job_id=application.opportunity.id,
+                application_id=application.id,
+            )
+        except Exception:
+            logger.exception("recommendation_event_record_failed")
         return _to_dict(application)
 
     def resolve_mark_application_applied(self, info, application_id: str):
@@ -692,7 +923,42 @@ class Mutation(graphene.ObjectType):
         )
         if application is None:
             raise GraphQLError("Application not found")
+        try:
+            request.app.state.main_store.record_recommendation_event(
+                user_id=user_id,
+                event_type="application_applied",
+                external_job_id=application.opportunity.id,
+                application_id=application.id,
+            )
+        except Exception:
+            logger.exception("recommendation_event_record_failed")
         return _to_dict(application)
+
+    def resolve_confirm_inferred_preferences(self, info, actions):
+        request = info.context["request"]
+        user_id = authenticated_user_id_from_request(request)
+        parsed_actions: list[InferredPreferenceDecisionInput] = []
+        for action in actions or []:
+            edge_id = str(action.get("edge_id", "")).strip()
+            if not edge_id:
+                raise GraphQLError("edgeId is required")
+            parsed_actions.append(
+                InferredPreferenceDecisionInput(
+                    edge_id=edge_id,
+                    decision=_normalize_inferred_preference_decision(
+                        action.get("decision")
+                    ),
+                    edited_label=action.get("edited_label"),
+                )
+            )
+        try:
+            result = request.app.state.main_store.confirm_inferred_preferences(
+                user_id=user_id,
+                actions=parsed_actions,
+            )
+            return _to_dict(result)
+        except Exception as exc:
+            _handle_exception(exc)
 
     def resolve_update_profile(self, info, input):
         request = info.context["request"]

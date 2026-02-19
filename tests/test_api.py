@@ -9,7 +9,19 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from common.time import utc_now
-from backend.db_models import ExternalRunRefRow, ResumeRow
+from backend.db_models import (
+    EvaluationMetricSnapshotRow,
+    ExternalRunRefRow,
+    JobMatchExplanationRow,
+    PreferenceEdgeRow,
+    PreferenceEvidenceRow,
+    PreferenceFeedbackRow,
+    PreferenceNodeRow,
+    PreferenceProfileRow,
+    RecommendationEventRow,
+    RecommendationImpressionRow,
+    ResumeRow,
+)
 from backend.main import create_app
 from backend.models import (
     ApplicationRecord,
@@ -284,6 +296,880 @@ def test_graphql_upload_resume_supports_base64_text_payload(test_client: TestCli
         assert row.file_mime_type == "text/plain"
         assert row.file_size_bytes == len(resume_text.encode("utf-8"))
         assert row.file_sha256
+
+
+def test_upload_resume_populates_preference_graph_rows(test_client: TestClient) -> None:
+    signup = _signup_user(
+        test_client,
+        full_name="Graph Resume",
+        email="graph-resume@example.com",
+    )
+    token = signup["token"]
+    user_id = signup["user"]["id"]
+
+    result = _graphql(
+        test_client,
+        """
+        mutation UploadResume($filename: String!, $resumeText: String!) {
+          uploadResume(filename: $filename, resumeText: $resumeText) {
+            id
+          }
+        }
+        """,
+        {
+            "filename": "resume.txt",
+            "resumeText": (
+                "Senior backend engineer focused on Python and FastAPI. "
+                "Remote work preferred and authorized to work in United States."
+            ),
+        },
+        token=token,
+    )
+    assert "errors" not in result
+
+    with test_client.app.state.main_store._session_factory() as session:
+        profile = session.scalar(
+            select(PreferenceProfileRow)
+            .where(
+                PreferenceProfileRow.user_id == user_id,
+                PreferenceProfileRow.status == "active",
+            )
+            .limit(1)
+        )
+        assert profile is not None
+
+        edges = session.scalars(
+            select(PreferenceEdgeRow).where(PreferenceEdgeRow.profile_id == profile.id)
+        ).all()
+        assert edges
+        assert any(edge.source == "resume_parse" for edge in edges)
+
+        node_ids = [edge.node_id for edge in edges]
+        nodes = session.scalars(
+            select(PreferenceNodeRow).where(PreferenceNodeRow.id.in_(node_ids))
+        ).all()
+        canonical_keys = {node.canonical_key for node in nodes}
+        assert "python" in canonical_keys
+        assert any(key in canonical_keys for key in {"remote", "united-states"})
+
+        evidence_rows = session.scalars(
+            select(PreferenceEvidenceRow).where(PreferenceEvidenceRow.user_id == user_id)
+        ).all()
+        assert evidence_rows
+
+
+def test_update_preferences_creates_manual_override_edges(test_client: TestClient) -> None:
+    signup = _signup_user(
+        test_client,
+        full_name="Graph Manual Override",
+        email="graph-manual-override@example.com",
+    )
+    token = signup["token"]
+    user_id = signup["user"]["id"]
+
+    upload = _graphql(
+        test_client,
+        """
+        mutation UploadResume($filename: String!, $resumeText: String!) {
+          uploadResume(filename: $filename, resumeText: $resumeText) {
+            id
+          }
+        }
+        """,
+        {
+            "filename": "resume.txt",
+            "resumeText": "Python backend engineer building APIs.",
+        },
+        token=token,
+    )
+    assert "errors" not in upload
+
+    update = _graphql(
+        test_client,
+        """
+        mutation UpdatePreferences(
+          $interests: [String!]!
+          $locations: [String!]
+          $applicationsPerDay: Int!
+        ) {
+          updatePreferences(
+            interests: $interests
+            locations: $locations
+            applicationsPerDay: $applicationsPerDay
+          ) {
+            userId
+          }
+        }
+        """,
+        {
+            "interests": ["python", "platform"],
+            "locations": ["Canada"],
+            "applicationsPerDay": 5,
+        },
+        token=token,
+    )
+    assert "errors" not in update
+
+    with test_client.app.state.main_store._session_factory() as session:
+        profile = session.scalar(
+            select(PreferenceProfileRow)
+            .where(
+                PreferenceProfileRow.user_id == user_id,
+                PreferenceProfileRow.status == "active",
+            )
+            .limit(1)
+        )
+        assert profile is not None
+
+        edges = session.scalars(
+            select(PreferenceEdgeRow).where(PreferenceEdgeRow.profile_id == profile.id)
+        ).all()
+        assert any(edge.source == "manual" for edge in edges)
+        assert any(edge.source == "manual" and edge.relationship == "overrides" for edge in edges)
+
+        location_edge = next(
+            (
+                edge
+                for edge in edges
+                if edge.source == "manual" and edge.hard_constraint
+            ),
+            None,
+        )
+        assert location_edge is not None
+
+
+def test_graphql_inferred_preferences_query_returns_pending_items(
+    test_client: TestClient,
+) -> None:
+    signup = _signup_user(
+        test_client,
+        full_name="Inference Query User",
+        email="inference-query@example.com",
+    )
+    token = signup["token"]
+
+    upload = _graphql(
+        test_client,
+        """
+        mutation UploadResume($filename: String!, $resumeText: String!) {
+          uploadResume(filename: $filename, resumeText: $resumeText) {
+            id
+          }
+        }
+        """,
+        {
+            "filename": "resume.txt",
+            "resumeText": (
+                "Python backend engineer. Remote preferred in Canada and authorized to work in United States."
+            ),
+        },
+        token=token,
+    )
+    assert "errors" not in upload
+
+    inferred = _graphql(
+        test_client,
+        """
+        query Inferred($status: InferredPreferenceStatus) {
+          inferredPreferences(status: $status) {
+            edgeId
+            nodeType
+            canonicalKey
+            label
+            status
+          }
+        }
+        """,
+        {"status": "PENDING"},
+        token=token,
+    )
+    assert "errors" not in inferred
+    items = inferred["data"]["inferredPreferences"]
+    assert items
+    assert all(item["status"] == "PENDING" for item in items)
+    assert any(item["nodeType"] == "skill" for item in items)
+    assert any(item["canonicalKey"] == "python" for item in items)
+
+
+def test_confirm_inferred_preferences_accept_records_feedback_and_updates_locations(
+    test_client: TestClient,
+) -> None:
+    signup = _signup_user(
+        test_client,
+        full_name="Inference Accept User",
+        email="inference-accept@example.com",
+    )
+    token = signup["token"]
+    user_id = signup["user"]["id"]
+
+    upload = _graphql(
+        test_client,
+        """
+        mutation UploadResume($filename: String!, $resumeText: String!) {
+          uploadResume(filename: $filename, resumeText: $resumeText) {
+            id
+          }
+        }
+        """,
+        {
+            "filename": "resume.txt",
+            "resumeText": (
+                "Backend engineer with Python experience. Remote preferred and open to Canada."
+            ),
+        },
+        token=token,
+    )
+    assert "errors" not in upload
+
+    inferred = _graphql(
+        test_client,
+        """
+        query Pending {
+          inferredPreferences(status: PENDING) {
+            edgeId
+            nodeType
+            label
+          }
+        }
+        """,
+        token=token,
+    )
+    assert "errors" not in inferred
+    pending_items = inferred["data"]["inferredPreferences"]
+    location_item = next((item for item in pending_items if item["nodeType"] == "location"), None)
+    assert location_item is not None
+
+    confirm = _graphql(
+        test_client,
+        """
+        mutation Confirm($actions: [InferredPreferenceDecisionInput!]!) {
+          confirmInferredPreferences(actions: $actions) {
+            acceptedCount
+            rejectedCount
+            editedCount
+            remainingPendingCount
+          }
+        }
+        """,
+        {
+            "actions": [
+                {
+                    "edgeId": location_item["edgeId"],
+                    "decision": "ACCEPT",
+                }
+            ]
+        },
+        token=token,
+    )
+    assert "errors" not in confirm
+    payload = confirm["data"]["confirmInferredPreferences"]
+    assert payload["acceptedCount"] == 1
+    assert payload["rejectedCount"] == 0
+    assert payload["editedCount"] == 0
+
+    me = _graphql(
+        test_client,
+        """
+        query Me {
+          me {
+            locations
+          }
+        }
+        """,
+        token=token,
+    )
+    assert "errors" not in me
+    assert location_item["label"] in me["data"]["me"]["locations"]
+
+    with test_client.app.state.main_store._session_factory() as session:
+        feedback = session.scalar(
+            select(PreferenceFeedbackRow)
+            .where(
+                PreferenceFeedbackRow.user_id == user_id,
+                PreferenceFeedbackRow.decision == "accept",
+                PreferenceFeedbackRow.node_type == "location",
+            )
+            .order_by(PreferenceFeedbackRow.created_at.desc())
+            .limit(1)
+        )
+        assert feedback is not None
+
+
+def test_confirm_inferred_preferences_edit_updates_manual_interest_and_feedback(
+    test_client: TestClient,
+) -> None:
+    signup = _signup_user(
+        test_client,
+        full_name="Inference Edit User",
+        email="inference-edit@example.com",
+    )
+    token = signup["token"]
+    user_id = signup["user"]["id"]
+
+    upload = _graphql(
+        test_client,
+        """
+        mutation UploadResume($filename: String!, $resumeText: String!) {
+          uploadResume(filename: $filename, resumeText: $resumeText) {
+            id
+          }
+        }
+        """,
+        {
+            "filename": "resume.txt",
+            "resumeText": "Python engineer with FastAPI and backend automation experience.",
+        },
+        token=token,
+    )
+    assert "errors" not in upload
+
+    inferred = _graphql(
+        test_client,
+        """
+        query Pending {
+          inferredPreferences(status: PENDING) {
+            edgeId
+            nodeType
+            canonicalKey
+          }
+        }
+        """,
+        token=token,
+    )
+    assert "errors" not in inferred
+    skill_item = next(
+        (
+            item
+            for item in inferred["data"]["inferredPreferences"]
+            if item["nodeType"] == "skill" and item["canonicalKey"] == "python"
+        ),
+        None,
+    )
+    assert skill_item is not None
+
+    edited_label = "Python Platform Engineering"
+    confirm = _graphql(
+        test_client,
+        """
+        mutation Confirm($actions: [InferredPreferenceDecisionInput!]!) {
+          confirmInferredPreferences(actions: $actions) {
+            acceptedCount
+            rejectedCount
+            editedCount
+            remainingPendingCount
+          }
+        }
+        """,
+        {
+            "actions": [
+                {
+                    "edgeId": skill_item["edgeId"],
+                    "decision": "EDIT",
+                    "editedLabel": edited_label,
+                }
+            ]
+        },
+        token=token,
+    )
+    assert "errors" not in confirm
+    payload = confirm["data"]["confirmInferredPreferences"]
+    assert payload["acceptedCount"] == 0
+    assert payload["rejectedCount"] == 0
+    assert payload["editedCount"] == 1
+
+    me = _graphql(
+        test_client,
+        """
+        query Me {
+          me {
+            interests
+          }
+        }
+        """,
+        token=token,
+    )
+    assert "errors" not in me
+    assert edited_label in me["data"]["me"]["interests"]
+
+    with test_client.app.state.main_store._session_factory() as session:
+        feedback = session.scalar(
+            select(PreferenceFeedbackRow)
+            .where(
+                PreferenceFeedbackRow.user_id == user_id,
+                PreferenceFeedbackRow.decision == "edit",
+                PreferenceFeedbackRow.node_type == "skill",
+            )
+            .order_by(PreferenceFeedbackRow.created_at.desc())
+            .limit(1)
+        )
+        assert feedback is not None
+        detail = json.loads(feedback.detail_json)
+        assert detail["edited_label"] == edited_label
+
+
+def test_confirm_inferred_preferences_reject_suppresses_same_resume_fingerprint(
+    test_client: TestClient,
+) -> None:
+    signup = _signup_user(
+        test_client,
+        full_name="Inference Reject User",
+        email="inference-reject@example.com",
+    )
+    token = signup["token"]
+    user_id = signup["user"]["id"]
+    resume_text = "Python backend engineer with API and automation experience."
+
+    first_upload = _graphql(
+        test_client,
+        """
+        mutation UploadResume($filename: String!, $resumeText: String!) {
+          uploadResume(filename: $filename, resumeText: $resumeText) {
+            id
+          }
+        }
+        """,
+        {"filename": "resume.txt", "resumeText": resume_text},
+        token=token,
+    )
+    assert "errors" not in first_upload
+
+    pending = _graphql(
+        test_client,
+        """
+        query Pending {
+          inferredPreferences(status: PENDING) {
+            edgeId
+            nodeType
+            canonicalKey
+          }
+        }
+        """,
+        token=token,
+    )
+    assert "errors" not in pending
+    skill_item = next(
+        (
+            item
+            for item in pending["data"]["inferredPreferences"]
+            if item["nodeType"] == "skill" and item["canonicalKey"] == "python"
+        ),
+        None,
+    )
+    assert skill_item is not None
+
+    reject = _graphql(
+        test_client,
+        """
+        mutation Confirm($actions: [InferredPreferenceDecisionInput!]!) {
+          confirmInferredPreferences(actions: $actions) {
+            rejectedCount
+            remainingPendingCount
+          }
+        }
+        """,
+        {
+            "actions": [
+                {
+                    "edgeId": skill_item["edgeId"],
+                    "decision": "REJECT",
+                }
+            ]
+        },
+        token=token,
+    )
+    assert "errors" not in reject
+    assert reject["data"]["confirmInferredPreferences"]["rejectedCount"] == 1
+
+    republished = _graphql(
+        test_client,
+        """
+        mutation UploadResume($filename: String!, $resumeText: String!) {
+          uploadResume(filename: $filename, resumeText: $resumeText) {
+            id
+          }
+        }
+        """,
+        {"filename": "resume.txt", "resumeText": resume_text},
+        token=token,
+    )
+    assert "errors" not in republished
+
+    pending_after = _graphql(
+        test_client,
+        """
+        query Pending {
+          inferredPreferences(status: PENDING) {
+            nodeType
+            canonicalKey
+          }
+        }
+        """,
+        token=token,
+    )
+    assert "errors" not in pending_after
+    canonical_keys = {
+        (item["nodeType"], item["canonicalKey"])
+        for item in pending_after["data"]["inferredPreferences"]
+    }
+    assert ("skill", "python") not in canonical_keys
+
+    with test_client.app.state.main_store._session_factory() as session:
+        feedback = session.scalar(
+            select(PreferenceFeedbackRow)
+            .where(
+                PreferenceFeedbackRow.user_id == user_id,
+                PreferenceFeedbackRow.decision == "reject",
+                PreferenceFeedbackRow.node_type == "skill",
+                PreferenceFeedbackRow.canonical_key == "python",
+            )
+            .order_by(PreferenceFeedbackRow.created_at.desc())
+            .limit(1)
+        )
+        assert feedback is not None
+        assert isinstance(feedback.resume_sha256, str)
+        assert feedback.resume_sha256
+
+
+def test_graphql_evaluation_metrics_returns_expected_values_for_seeded_data(
+    test_client: TestClient,
+) -> None:
+    signup = _signup_user(
+        test_client,
+        full_name="Evaluation Metrics User",
+        email="evaluation-metrics@example.com",
+    )
+    token = signup["token"]
+    user_id = signup["user"]["id"]
+
+    test_client.app.state.main_store.record_recommendation_impressions(
+        user_id=user_id,
+        run_id="eval-run-1",
+        variant="legacy",
+        matches=[
+            MatchedJob(
+                external_job_id="eval-job-1",
+                title="Backend Engineer 1",
+                company="Acme",
+                location="Remote",
+                apply_url="https://example.com/jobs/eval-1",
+                source="greenhouse",
+                reason="seeded metrics run",
+                score=0.9,
+            ),
+            MatchedJob(
+                external_job_id="eval-job-2",
+                title="Backend Engineer 2",
+                company="Acme",
+                location="Remote",
+                apply_url="https://example.com/jobs/eval-2",
+                source="greenhouse",
+                reason="seeded metrics run",
+                score=0.8,
+            ),
+            MatchedJob(
+                external_job_id="eval-job-3",
+                title="Backend Engineer 3",
+                company="Acme",
+                location="Remote",
+                apply_url="https://example.com/jobs/eval-3",
+                source="greenhouse",
+                reason="seeded metrics run with hard constraint violation",
+                score=0.7,
+            ),
+        ],
+    )
+    test_client.app.state.main_store.record_recommendation_event(
+        user_id=user_id,
+        run_id="eval-run-1",
+        external_job_id="eval-job-1",
+        event_type="application_viewed",
+    )
+    test_client.app.state.main_store.record_recommendation_event(
+        user_id=user_id,
+        run_id="eval-run-1",
+        external_job_id="eval-job-2",
+        event_type="application_submitted",
+    )
+
+    result = _graphql(
+        test_client,
+        """
+        query Metrics($windowDays: Int!, $refresh: Boolean!) {
+          evaluationMetrics(windowDays: $windowDays, refresh: $refresh) {
+            windowDays
+            impressions
+            clicks
+            applicationsSubmitted
+            precisionAt5
+            precisionAt10
+            ndcgAt10
+            hardConstraintViolationRate
+            ctr
+            applyThroughRate
+            gateStatus
+          }
+        }
+        """,
+        {"windowDays": 14, "refresh": True},
+        token=token,
+    )
+    assert "errors" not in result
+    metrics = result["data"]["evaluationMetrics"]
+    assert metrics["windowDays"] == 14
+    assert metrics["impressions"] == 3
+    assert metrics["clicks"] == 1
+    assert metrics["applicationsSubmitted"] == 1
+    assert metrics["precisionAt5"] == pytest.approx(2 / 3)
+    assert metrics["precisionAt10"] == pytest.approx(2 / 3)
+    assert metrics["ndcgAt10"] == pytest.approx(0.7967075809905068)
+    assert metrics["hardConstraintViolationRate"] == pytest.approx(1 / 3)
+    assert metrics["ctr"] == pytest.approx(1 / 3)
+    assert metrics["applyThroughRate"] == pytest.approx(1 / 3)
+    assert metrics["gateStatus"] == "INSUFFICIENT_DATA"
+
+    with test_client.app.state.main_store._session_factory() as session:
+        snapshot = session.scalar(
+            select(EvaluationMetricSnapshotRow)
+            .where(
+                EvaluationMetricSnapshotRow.user_id == user_id,
+                EvaluationMetricSnapshotRow.window_days == 14,
+            )
+            .order_by(EvaluationMetricSnapshotRow.computed_at.desc())
+            .limit(1)
+        )
+        assert snapshot is not None
+
+
+def test_graphql_evaluation_metrics_gate_status_transitions(
+    test_client: TestClient,
+) -> None:
+    signup = _signup_user(
+        test_client,
+        full_name="Evaluation Gates User",
+        email="evaluation-gates@example.com",
+    )
+    token = signup["token"]
+    user_id = signup["user"]["id"]
+
+    test_client.app.state.eval_gate_thresholds = {
+        "min_impressions": 4,
+        "min_runs": 2,
+        "precision_at_5_min": 0.9,
+        "precision_at_10_min": 0.9,
+        "ndcg_at_10_min": 0.9,
+        "hard_constraint_violation_max": 0.0,
+        "ctr_min": 0.9,
+        "apply_through_min": 0.9,
+    }
+
+    insufficient = _graphql(
+        test_client,
+        """
+        query Metrics {
+          evaluationMetrics(windowDays: 14, refresh: true) {
+            gateStatus
+          }
+        }
+        """,
+        token=token,
+    )
+    assert "errors" not in insufficient
+    assert insufficient["data"]["evaluationMetrics"]["gateStatus"] == "INSUFFICIENT_DATA"
+
+    test_client.app.state.main_store.record_recommendation_impressions(
+        user_id=user_id,
+        run_id="gate-run-1",
+        variant="legacy",
+        matches=[
+            MatchedJob(
+                external_job_id="gate-job-1",
+                title="Role A",
+                company="Acme",
+                location="Remote",
+                apply_url="https://example.com/jobs/gate-1",
+                source="greenhouse",
+                reason="gate metrics",
+                score=0.9,
+            ),
+            MatchedJob(
+                external_job_id="gate-job-2",
+                title="Role B",
+                company="Acme",
+                location="Remote",
+                apply_url="https://example.com/jobs/gate-2",
+                source="greenhouse",
+                reason="gate metrics",
+                score=0.8,
+            ),
+        ],
+    )
+    test_client.app.state.main_store.record_recommendation_impressions(
+        user_id=user_id,
+        run_id="gate-run-2",
+        variant="legacy",
+        matches=[
+            MatchedJob(
+                external_job_id="gate-job-3",
+                title="Role C",
+                company="Acme",
+                location="Remote",
+                apply_url="https://example.com/jobs/gate-3",
+                source="greenhouse",
+                reason="gate metrics",
+                score=0.7,
+            ),
+            MatchedJob(
+                external_job_id="gate-job-4",
+                title="Role D",
+                company="Acme",
+                location="Remote",
+                apply_url="https://example.com/jobs/gate-4",
+                source="greenhouse",
+                reason="gate metrics",
+                score=0.6,
+            ),
+        ],
+    )
+
+    failed = _graphql(
+        test_client,
+        """
+        query Metrics {
+          evaluationMetrics(windowDays: 14, refresh: true) {
+            gateStatus
+          }
+        }
+        """,
+        token=token,
+    )
+    assert "errors" not in failed
+    assert failed["data"]["evaluationMetrics"]["gateStatus"] == "FAIL"
+
+    test_client.app.state.eval_gate_thresholds = {
+        "min_impressions": 1,
+        "min_runs": 1,
+        "precision_at_5_min": 0.0,
+        "precision_at_10_min": 0.0,
+        "ndcg_at_10_min": 0.0,
+        "hard_constraint_violation_max": 1.0,
+        "ctr_min": 0.0,
+        "apply_through_min": 0.0,
+    }
+
+    passed = _graphql(
+        test_client,
+        """
+        query Metrics {
+          evaluationMetrics(windowDays: 14, refresh: true) {
+            gateStatus
+            gateChecks {
+              metric
+              passed
+            }
+          }
+        }
+        """,
+        token=token,
+    )
+    assert "errors" not in passed
+    assert passed["data"]["evaluationMetrics"]["gateStatus"] == "PASS"
+    assert all(check["passed"] for check in passed["data"]["evaluationMetrics"]["gateChecks"])
+
+
+def test_graphql_instrumentation_writes_for_run_view_apply_paths(
+    test_client: TestClient,
+) -> None:
+    signup = _signup_user(
+        test_client,
+        full_name="Instrumentation User",
+        email="instrumentation-user@example.com",
+    )
+    token = signup["token"]
+    user_id = signup["user"]["id"]
+    _seed_profile(test_client, token=token, applications_per_day=3)
+
+    run_result = _graphql(
+        test_client,
+        """
+        mutation RunAgent {
+          runAgent {
+            id
+            opportunity {
+              id
+            }
+          }
+        }
+        """,
+        token=token,
+    )
+    assert "errors" not in run_result
+    applications = run_result["data"]["runAgent"]
+    assert len(applications) >= 2
+
+    viewed_application_id = applications[0]["id"]
+    apply_selected_application_id = applications[1]["id"]
+
+    viewed = _graphql(
+        test_client,
+        """
+        mutation Viewed($applicationId: ID!) {
+          markApplicationViewed(applicationId: $applicationId) {
+            id
+          }
+        }
+        """,
+        {"applicationId": viewed_application_id},
+        token=token,
+    )
+    assert "errors" not in viewed
+
+    marked_applied = _graphql(
+        test_client,
+        """
+        mutation Applied($applicationId: ID!) {
+          markApplicationApplied(applicationId: $applicationId) {
+            id
+          }
+        }
+        """,
+        {"applicationId": viewed_application_id},
+        token=token,
+    )
+    assert "errors" not in marked_applied
+
+    apply_selected = _graphql(
+        test_client,
+        """
+        mutation Apply($applicationIds: [ID!]!) {
+          applySelectedApplications(applicationIds: $applicationIds) {
+            runId
+            acceptedApplicationIds
+          }
+        }
+        """,
+        {"applicationIds": [apply_selected_application_id]},
+        token=token,
+    )
+    assert "errors" not in apply_selected
+    assert apply_selected["data"]["applySelectedApplications"]["acceptedApplicationIds"] == [
+        apply_selected_application_id
+    ]
+
+    with test_client.app.state.main_store._session_factory() as session:
+        impressions = session.scalars(
+            select(RecommendationImpressionRow).where(
+                RecommendationImpressionRow.user_id == user_id
+            )
+        ).all()
+        assert impressions
+
+        events = session.scalars(
+            select(RecommendationEventRow).where(RecommendationEventRow.user_id == user_id)
+        ).all()
+        event_types = {event.event_type for event in events}
+        assert "application_viewed" in event_types
+        assert "application_applied" in event_types
+        assert "application_submitted" in event_types
 
 
 def test_apply_payload_includes_resume_file_and_stored_payload_is_redacted(
@@ -692,6 +1578,117 @@ def test_graphql_run_agent_filters_results_by_multi_country_preferences(
     locations = [item["opportunity"]["location"] for item in result["data"]["runAgent"]]
     assert len(locations) == 2
     assert set(locations) == {"Canada", "Germany"}
+
+
+def test_graphql_run_agent_preference_graph_reranks_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class GraphRerankCloudClient(FakeCloudClient):
+        def start_match_run(self, payload) -> CloudMatchRunCreated:
+            run_id = f"match-run-{self._next_run}"
+            self._next_run += 1
+            self._runs[run_id] = [
+                MatchedJob(
+                    external_job_id=f"{run_id}-job-1",
+                    title="Generalist Engineer",
+                    company="Live Board 1",
+                    location="United States",
+                    apply_url="https://jobs.live-board.test/1",
+                    source="greenhouse",
+                    reason="General software profile",
+                    score=0.92,
+                ),
+                MatchedJob(
+                    external_job_id=f"{run_id}-job-2",
+                    title="Python Backend Engineer",
+                    company="Live Board 2",
+                    location="United States",
+                    apply_url="https://jobs.live-board.test/2",
+                    source="greenhouse",
+                    reason="Python and FastAPI overlap",
+                    score=0.41,
+                ),
+            ]
+            return CloudMatchRunCreated(
+                run_id=run_id,
+                status=MatchRunStatus.queued,
+                status_url="/graphql",
+            )
+
+    monkeypatch.setenv("USE_PREFERENCE_GRAPH_MATCHING", "true")
+    monkeypatch.setenv("ENABLE_PREFERENCE_GRAPH_SHADOW_SCORING", "true")
+    monkeypatch.setenv("USER_PROFILE_ENCRYPTION_KEY", "test-profile-encryption-key")
+    app = create_app(
+        database_url="sqlite+pysqlite:///:memory:",
+        cloud_client=GraphRerankCloudClient(),
+    )
+    with TestClient(app) as client:
+        signup = _signup_user(
+            client,
+            full_name="Graph Rerank",
+            email="graph-rerank@example.com",
+        )
+        token = signup["token"]
+        user_id = signup["user"]["id"]
+
+        preferences_result = _graphql(
+            client,
+            """
+            mutation UpdatePreferences($interests: [String!]!, $applicationsPerDay: Int!) {
+              updatePreferences(interests: $interests, applicationsPerDay: $applicationsPerDay) {
+                userId
+              }
+            }
+            """,
+            {"interests": ["python"], "applicationsPerDay": 5},
+            token=token,
+        )
+        assert "errors" not in preferences_result
+
+        resume_result = _graphql(
+            client,
+            """
+            mutation UploadResume($filename: String!, $resumeText: String!) {
+              uploadResume(filename: $filename, resumeText: $resumeText) {
+                id
+              }
+            }
+            """,
+            {
+                "filename": "resume.txt",
+                "resumeText": "Python backend engineer with FastAPI experience.",
+            },
+            token=token,
+        )
+        assert "errors" not in resume_result
+
+        run_result = _graphql(
+            client,
+            """
+            mutation RunAgent {
+              runAgent {
+                opportunity {
+                  title
+                  reason
+                }
+              }
+            }
+            """,
+            token=token,
+        )
+        assert "errors" not in run_result
+        opportunities = [item["opportunity"] for item in run_result["data"]["runAgent"]]
+        assert opportunities
+        assert opportunities[0]["title"] == "Python Backend Engineer"
+        assert "graph-hybrid" in opportunities[0]["reason"]
+
+        with client.app.state.main_store._session_factory() as session:
+            explanations = session.scalars(
+                select(JobMatchExplanationRow).where(
+                    JobMatchExplanationRow.user_id == user_id
+                )
+            ).all()
+            assert len(explanations) >= 2
 
 
 def test_graphql_run_agent_enqueues_discovery_kick(test_client: TestClient) -> None:

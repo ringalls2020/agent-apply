@@ -45,14 +45,22 @@ class CloudOrchestrationService:
         cloud_client: CloudAutomationClient,
         application_store: PostgresStore | None = None,
         default_daily_cap: int = 25,
+        use_preference_graph_matching: bool = False,
+        enable_preference_graph_shadow_scoring: bool = True,
     ) -> None:
         self.store = store
         self.cloud_client = cloud_client
         self.application_store = application_store
         self.default_daily_cap = default_daily_cap
+        self.use_preference_graph_matching = use_preference_graph_matching
+        self.enable_preference_graph_shadow_scoring = enable_preference_graph_shadow_scoring
         logger.debug(
             "cloud_orchestration_service_initialized",
-            extra={"default_daily_cap": default_daily_cap},
+            extra={
+                "default_daily_cap": default_daily_cap,
+                "use_preference_graph_matching": use_preference_graph_matching,
+                "enable_preference_graph_shadow_scoring": enable_preference_graph_shadow_scoring,
+            },
         )
 
     def upsert_user(self, user_id: str, payload: UserUpsertRequest) -> UserResponse:
@@ -156,11 +164,26 @@ class CloudOrchestrationService:
             status=status.status,
             latest_response=status.model_dump(mode="json"),
         )
+        resolved_matches = status.matches
+        should_score_with_graph = (
+            status.status in {MatchRunStatus.completed, MatchRunStatus.partial}
+            and (
+                self.use_preference_graph_matching
+                or self.enable_preference_graph_shadow_scoring
+            )
+        )
+        if should_score_with_graph:
+            resolved_matches = self.store.score_matches_with_preference_graph(
+                user_id=user_id,
+                external_run_id=run_id,
+                matches=status.matches,
+                apply_rerank=self.use_preference_graph_matching,
+            )
         if status.status in {MatchRunStatus.completed, MatchRunStatus.partial}:
             self.store.replace_job_matches(
                 user_id=user_id,
                 external_run_id=run_id,
-                matches=status.matches,
+                matches=resolved_matches,
             )
         stored_matches = self.store.list_job_matches(
             user_id=user_id, external_run_id=run_id
@@ -168,7 +191,7 @@ class CloudOrchestrationService:
         return MatchRunStatusResponse(
             run_id=run_id,
             status=status.status,
-            results=stored_matches or status.matches,
+            results=stored_matches or resolved_matches,
             error=status.error,
         )
 
@@ -267,6 +290,37 @@ class CloudOrchestrationService:
             external_run_id=payload.run_id,
             attempt=payload.attempt,
         )
+        if payload.attempt.external_job_id and payload.attempt.status in {
+            ApplyAttemptStatus.succeeded,
+            ApplyAttemptStatus.submitted,
+            ApplyAttemptStatus.blocked,
+            ApplyAttemptStatus.failed,
+        }:
+            event_type = (
+                "application_submitted_callback"
+                if payload.attempt.status
+                in {ApplyAttemptStatus.succeeded, ApplyAttemptStatus.submitted}
+                else "application_terminal_failed_callback"
+            )
+            try:
+                self.store.record_recommendation_event(
+                    user_id=payload.user_ref,
+                    run_id=payload.run_id,
+                    external_job_id=payload.attempt.external_job_id,
+                    application_id=payload.attempt.attempt_id,
+                    event_type=event_type,
+                    detail={
+                        "attempt_status": payload.attempt.status.value,
+                        "failure_code": payload.attempt.failure_code.value
+                        if payload.attempt.failure_code
+                        else None,
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    "recommendation_event_record_failed",
+                    extra={"run_id": payload.run_id, "user_id": payload.user_ref},
+                )
         if (
             self.application_store is None
             or not payload.attempt.external_job_id

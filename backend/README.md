@@ -32,6 +32,8 @@ Main operations are exposed via GraphQL mutations and queries:
 - `applySelectedApplications`
 - `markApplicationViewed`, `markApplicationApplied`
 - `updatePreferences`, `uploadResume`, `profile`, `updateProfile`
+- `inferredPreferences`, `confirmInferredPreferences`
+- `evaluationMetrics`
 
 ### Admin dashboard
 
@@ -93,6 +95,17 @@ Callback requirements:
 
 - `ENABLE_DEV_RUN_AGENT` (default: `true` in local/dev/test; `false` otherwise)
 - `ENABLE_RUN_AGENT_DISCOVERY_KICK` (default: `true` in local/dev/test; `false` otherwise)
+- `USE_PREFERENCE_GRAPH_MATCHING` (default: `false`; reranks matches with graph + semantic blend)
+- `ENABLE_PREFERENCE_GRAPH_SHADOW_SCORING` (default: `true`; computes and stores explainability rows without changing rank)
+- `EVAL_DEFAULT_WINDOW_DAYS` (default: `14`)
+- `EVAL_GATE_MIN_IMPRESSIONS` (default: `50`)
+- `EVAL_GATE_MIN_RUNS` (default: `10`)
+- `EVAL_GATE_PRECISION_AT_5_MIN` (default: `0.35`)
+- `EVAL_GATE_PRECISION_AT_10_MIN` (default: `0.25`)
+- `EVAL_GATE_NDCG_AT_10_MIN` (default: `0.45`)
+- `EVAL_GATE_HARD_CONSTRAINT_VIOLATION_MAX` (default: `0.01`)
+- `EVAL_GATE_CTR_MIN` (default: `0.10`)
+- `EVAL_GATE_APPLY_THROUGH_MIN` (default: `0.03`)
 
 `runAgent` now enqueues cloud discovery refresh via `/v1/discovery/kick` (non-blocking) when enabled.
 

@@ -41,6 +41,74 @@ export const ME = gql`
   }
 `;
 
+export const INFERRED_PREFERENCES = gql`
+  query InferredPreferences($status: InferredPreferenceStatus) {
+    inferredPreferences(status: $status) {
+      edgeId
+      nodeId
+      nodeType
+      canonicalKey
+      label
+      confidence
+      weight
+      hardConstraint
+      rationale
+      status
+      lastDecisionAt
+    }
+  }
+`;
+
+export const CONFIRM_INFERRED_PREFERENCES = gql`
+  mutation ConfirmInferredPreferences($actions: [InferredPreferenceDecisionInput!]!) {
+    confirmInferredPreferences(actions: $actions) {
+      acceptedCount
+      rejectedCount
+      editedCount
+      remainingPendingCount
+      inferredPreferences {
+        edgeId
+        nodeId
+        nodeType
+        canonicalKey
+        label
+        confidence
+        weight
+        hardConstraint
+        rationale
+        status
+        lastDecisionAt
+      }
+    }
+  }
+`;
+
+export const EVALUATION_METRICS = gql`
+  query EvaluationMetrics($windowDays: Int, $refresh: Boolean) {
+    evaluationMetrics(windowDays: $windowDays, refresh: $refresh) {
+      windowDays
+      impressions
+      clicks
+      applicationsSubmitted
+      precisionAt5
+      precisionAt10
+      ndcgAt10
+      hardConstraintViolationRate
+      ctr
+      applyThroughRate
+      gateStatus
+      gateChecks {
+        metric
+        actual
+        threshold
+        comparator
+        passed
+      }
+      computedAt
+    }
+  }
+`;
+
 export const UPDATE_PREFERENCES = gql`
   mutation UpdatePreferences($interests: [String!]!, $applicationsPerDay: Int!, $locations: [String!]) {
     updatePreferences(interests: $interests, applicationsPerDay: $applicationsPerDay, locations: $locations) {
