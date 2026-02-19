@@ -359,16 +359,20 @@ class JobIntelStore:
     def create_apply_run(self, request: ApplyRunRequest) -> str:
         run_id = str(uuid4())
         with self._session_factory() as session:
+            now = utc_now()
             session.add(
                 ApplyRunRow(
                     id=run_id,
                     user_ref=request.user_ref,
                     status=MatchRunStatus.queued.value,
                     request_json=request.model_dump_json(),
-                    started_at=utc_now(),
-                    updated_at=utc_now(),
+                    started_at=now,
+                    updated_at=now,
                 )
             )
+            # PostgreSQL enforces foreign keys immediately; persist the parent run row
+            # before enqueueing child apply attempts.
+            session.flush()
 
             for job in request.jobs:
                 session.add(
@@ -378,8 +382,8 @@ class JobIntelStore:
                         external_job_id=job.external_job_id,
                         job_url=job.apply_url,
                         status=ApplyAttemptStatus.queued.value,
-                        created_at=utc_now(),
-                        updated_at=utc_now(),
+                        created_at=now,
+                        updated_at=now,
                     )
                 )
 
