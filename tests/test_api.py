@@ -1,11 +1,15 @@
+import base64
 from collections.abc import Iterator
 from datetime import timedelta
+import json
 import os
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from common.time import utc_now
+from backend.db_models import ExternalRunRefRow, ResumeRow
 from backend.main import create_app
 from backend.models import (
     ApplicationRecord,
@@ -186,6 +190,164 @@ def _seed_profile(
     )
     assert "errors" not in preferences_result
     assert "errors" not in resume_result
+
+
+def test_graphql_upload_resume_supports_base64_text_payload(test_client: TestClient) -> None:
+    signup = _signup_user(
+        test_client,
+        full_name="Binary Resume",
+        email="binary-resume@example.com",
+    )
+    token = signup["token"]
+    user_id = signup["user"]["id"]
+    resume_text = "ML engineer with automation and platform experience."
+    encoded = base64.b64encode(resume_text.encode("utf-8")).decode("ascii")
+
+    result = _graphql(
+        test_client,
+        """
+        mutation UploadResume(
+          $filename: String!
+          $fileContentBase64: String
+          $fileMimeType: String
+        ) {
+          uploadResume(
+            filename: $filename
+            fileContentBase64: $fileContentBase64
+            fileMimeType: $fileMimeType
+          ) {
+            id
+            filename
+            resumeText
+          }
+        }
+        """,
+        {
+            "filename": "resume.txt",
+            "fileContentBase64": encoded,
+            "fileMimeType": "text/plain",
+        },
+        token=token,
+    )
+    assert "errors" not in result
+    assert result["data"]["uploadResume"]["filename"] == "resume.txt"
+    assert "ML engineer" in result["data"]["uploadResume"]["resumeText"]
+
+    with test_client.app.state.main_store._session_factory() as session:
+        row = session.scalar(select(ResumeRow).where(ResumeRow.user_id == user_id).limit(1))
+        assert row is not None
+        assert row.resume_text.startswith("ML engineer")
+        assert row.file_bytes is not None
+        assert row.file_mime_type == "text/plain"
+        assert row.file_size_bytes == len(resume_text.encode("utf-8"))
+        assert row.file_sha256
+
+
+def test_apply_payload_includes_resume_file_and_stored_payload_is_redacted(
+    test_client: TestClient,
+) -> None:
+    signup = _signup_user(
+        test_client,
+        full_name="Redaction User",
+        email="redaction-user@example.com",
+    )
+    token = signup["token"]
+    user_id = signup["user"]["id"]
+    resume_text = "Platform engineer with backend and automation experience."
+    encoded = base64.b64encode(resume_text.encode("utf-8")).decode("ascii")
+
+    preferences_result = _graphql(
+        test_client,
+        """
+        mutation UpdatePreferences($interests: [String!]!, $applicationsPerDay: Int!) {
+          updatePreferences(interests: $interests, applicationsPerDay: $applicationsPerDay) {
+            userId
+          }
+        }
+        """,
+        {"interests": ["platform", "backend"], "applicationsPerDay": 3},
+        token=token,
+    )
+    assert "errors" not in preferences_result
+
+    resume_result = _graphql(
+        test_client,
+        """
+        mutation UploadResume(
+          $filename: String!
+          $fileContentBase64: String
+          $fileMimeType: String
+        ) {
+          uploadResume(
+            filename: $filename
+            fileContentBase64: $fileContentBase64
+            fileMimeType: $fileMimeType
+          ) {
+            id
+            filename
+          }
+        }
+        """,
+        {
+            "filename": "resume.txt",
+            "fileContentBase64": encoded,
+            "fileMimeType": "text/plain",
+        },
+        token=token,
+    )
+    assert "errors" not in resume_result
+
+    run_result = _graphql(
+        test_client,
+        """
+        mutation RunAgent {
+          runAgent {
+            id
+          }
+        }
+        """,
+        token=token,
+    )
+    assert "errors" not in run_result
+    first_application_id = run_result["data"]["runAgent"][0]["id"]
+
+    apply_result = _graphql(
+        test_client,
+        """
+        mutation ApplySelected($applicationIds: [ID!]!) {
+          applySelectedApplications(applicationIds: $applicationIds) {
+            runId
+          }
+        }
+        """,
+        variables={"applicationIds": [first_application_id]},
+        token=token,
+    )
+    assert "errors" not in apply_result
+    run_id = apply_result["data"]["applySelectedApplications"]["runId"]
+    assert run_id
+
+    fake_cloud = test_client.app.state.test_fake_cloud_client
+    assert fake_cloud.last_apply_payload is not None
+    resume_file_payload = fake_cloud.last_apply_payload.profile_payload.get("resume_file")
+    assert isinstance(resume_file_payload, dict)
+    assert resume_file_payload.get("content_base64") == encoded
+    assert resume_file_payload.get("size_bytes") == len(resume_text.encode("utf-8"))
+
+    with test_client.app.state.main_store._session_factory() as session:
+        row = session.scalar(
+            select(ExternalRunRefRow)
+            .where(
+                ExternalRunRefRow.user_id == user_id,
+                ExternalRunRefRow.external_run_id == run_id,
+            )
+            .limit(1)
+        )
+        assert row is not None
+        request_payload = json.loads(row.request_payload_json)
+        stored_resume_file = request_payload["profile_payload"]["resume_file"]
+        assert stored_resume_file["content_base64"] == "<redacted>"
+        assert stored_resume_file["size_bytes"] == len(resume_text.encode("utf-8"))
 
 
 def _seed_application_record(

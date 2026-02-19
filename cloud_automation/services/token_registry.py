@@ -79,15 +79,34 @@ class TokenRegistryCoordinator:
 
             raw_documents: dict[str, str] = {}
             normalized_jobs = []
+            parse_failure_count = 0
+            parse_failure_samples: list[dict[str, str]] = []
             for url in discovered_urls:
                 try:
                     raw_doc = adapter.fetch(url)
                     job = adapter.parse(raw_doc, url)
-                except Exception:
-                    logger.exception("validated_feed_parse_failed", extra={"source": adapter.source_name, "url": url})
+                except Exception as exc:
+                    parse_failure_count += 1
+                    if len(parse_failure_samples) < 5:
+                        parse_failure_samples.append(
+                            {
+                                "url": url,
+                                "error": self._format_parse_error(exc),
+                            }
+                        )
                     continue
                 raw_documents[url] = raw_doc
                 normalized_jobs.append(job)
+
+            if parse_failure_count:
+                logger.warning(
+                    "validated_feed_parse_failed_summary",
+                    extra={
+                        "source": adapter.source_name,
+                        "failed_count": parse_failure_count,
+                        "sample_failures": parse_failure_samples,
+                    },
+                )
 
             if not normalized_jobs:
                 continue
@@ -101,6 +120,13 @@ class TokenRegistryCoordinator:
             discovered_count += len(normalized_jobs)
 
         return discovered_count
+
+    @staticmethod
+    def _format_parse_error(exc: Exception, *, max_len: int = 220) -> str:
+        summary = f"{exc.__class__.__name__}: {exc}"
+        if len(summary) <= max_len:
+            return summary
+        return f"{summary[: max_len - 3]}..."
 
     def _validate_token(self, *, provider: str, token: str) -> tuple[str, str | None]:
         url_by_provider = {

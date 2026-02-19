@@ -7,6 +7,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -132,6 +133,10 @@ class ResumeRow(Base):
     )
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     resume_text: Mapped[str] = mapped_column(Text, nullable=False)
+    file_bytes: Mapped[bytes | None] = mapped_column(LargeBinary)
+    file_mime_type: Mapped[str | None] = mapped_column(String(255))
+    file_size_bytes: Mapped[int | None] = mapped_column(Integer)
+    file_sha256: Mapped[str | None] = mapped_column(String(64))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=utc_now
     )

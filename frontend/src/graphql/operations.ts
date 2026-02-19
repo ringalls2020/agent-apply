@@ -51,8 +51,18 @@ export const UPDATE_PREFERENCES = gql`
 `;
 
 export const UPLOAD_RESUME = gql`
-  mutation UploadResume($filename: String!, $resumeText: String!) {
-    uploadResume(filename: $filename, resumeText: $resumeText) {
+  mutation UploadResume(
+    $filename: String!
+    $resumeText: String
+    $fileContentBase64: String
+    $fileMimeType: String
+  ) {
+    uploadResume(
+      filename: $filename
+      resumeText: $resumeText
+      fileContentBase64: $fileContentBase64
+      fileMimeType: $fileMimeType
+    ) {
       id
       filename
     }

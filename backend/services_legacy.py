@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import copy
 import json
 import logging
 import re
+from io import BytesIO
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List
 from uuid import uuid4
@@ -572,6 +576,7 @@ def _json_loads(value: str | None, default: Any) -> Any:
 
 
 _DECLINE_TO_ANSWER = "decline_to_answer"
+_MAX_RESUME_FILE_SIZE_BYTES = 8 * 1024 * 1024
 
 
 def _normalize_optional_text(value: str | None) -> str | None:
@@ -592,6 +597,86 @@ def _sanitize_resume_text(value: str) -> str:
     compacted = re.sub(r"[ \t]+", " ", scrubbed)
     compacted = re.sub(r"\n{3,}", "\n\n", compacted)
     return compacted.strip()
+
+
+def _decode_resume_file_content_base64(value: str) -> bytes:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("Resume file payload is empty")
+    try:
+        decoded = base64.b64decode(normalized, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("Resume file payload is not valid base64") from exc
+    if not decoded:
+        raise ValueError("Resume file payload is empty")
+    if len(decoded) > _MAX_RESUME_FILE_SIZE_BYTES:
+        raise ValueError(
+            f"Resume file exceeds {_MAX_RESUME_FILE_SIZE_BYTES // (1024 * 1024)}MB limit"
+        )
+    return decoded
+
+
+def _extract_resume_text_from_file(
+    *,
+    filename: str,
+    file_bytes: bytes,
+    file_mime_type: str | None = None,
+) -> str:
+    normalized_filename = filename.strip().lower()
+    normalized_mime = (file_mime_type or "").strip().lower()
+
+    if normalized_filename.endswith((".txt", ".md")) or normalized_mime in {
+        "text/plain",
+        "text/markdown",
+    }:
+        try:
+            return file_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            return file_bytes.decode("utf-8", errors="ignore")
+
+    if normalized_filename.endswith(".pdf") or normalized_mime == "application/pdf":
+        try:
+            from pypdf import PdfReader
+        except Exception as exc:
+            raise ValueError("PDF parsing dependency is unavailable") from exc
+        try:
+            reader = PdfReader(BytesIO(file_bytes))
+            pages = [str(page.extract_text() or "") for page in reader.pages]
+            text = "\n".join(page for page in pages if page.strip())
+            if text.strip():
+                return text
+            raise ValueError("Unable to extract text from PDF resume")
+        except Exception as exc:
+            raise ValueError("Unable to read PDF resume") from exc
+
+    if normalized_filename.endswith(".doc") or normalized_mime == "application/msword":
+        raise ValueError(
+            "Legacy .doc resumes are not supported for text extraction. Use .docx, .pdf, .txt, or .md"
+        )
+
+    if normalized_filename.endswith(".docx") or normalized_mime == (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    ):
+        try:
+            from docx import Document
+        except Exception as exc:
+            raise ValueError("DOCX parsing dependency is unavailable") from exc
+        try:
+            document = Document(BytesIO(file_bytes))
+            text = "\n".join(
+                paragraph.text.strip()
+                for paragraph in document.paragraphs
+                if paragraph.text and paragraph.text.strip()
+            )
+            if text.strip():
+                return text
+            raise ValueError("Unable to extract text from DOCX resume")
+        except Exception as exc:
+            raise ValueError("Unable to read DOCX resume") from exc
+
+    raise ValueError(
+        "Unsupported resume file type. Use .txt, .md, .pdf, or .docx"
+    )
 
 
 _RESUME_INTEREST_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -890,7 +975,24 @@ class MainPlatformStore:
         if not sanitized_filename:
             raise ValueError("Resume filename is required")
 
-        sanitized_resume_text = _sanitize_resume_text(payload.resume_text)
+        file_bytes: bytes | None = None
+        file_mime_type = _normalize_optional_text(payload.file_mime_type)
+        file_size_bytes: int | None = None
+        file_sha256: str | None = None
+        if payload.file_content_base64 is not None:
+            file_bytes = _decode_resume_file_content_base64(payload.file_content_base64)
+            file_size_bytes = len(file_bytes)
+            file_sha256 = sha256_hex(file_bytes)
+
+        raw_resume_text = _normalize_optional_text(payload.resume_text) or ""
+        if not raw_resume_text and file_bytes is not None:
+            raw_resume_text = _extract_resume_text_from_file(
+                filename=sanitized_filename,
+                file_bytes=file_bytes,
+                file_mime_type=file_mime_type,
+            )
+
+        sanitized_resume_text = _sanitize_resume_text(raw_resume_text)
         if not sanitized_resume_text:
             raise ValueError("Resume text is empty after sanitization")
         parsed_interests = _extract_resume_interests(sanitized_resume_text)
@@ -905,12 +1007,20 @@ class MainPlatformStore:
                     user_id=user_id,
                     filename=sanitized_filename,
                     resume_text=sanitized_resume_text,
+                    file_bytes=file_bytes,
+                    file_mime_type=file_mime_type,
+                    file_size_bytes=file_size_bytes,
+                    file_sha256=file_sha256,
                     updated_at=now,
                 )
                 session.add(row)
             else:
                 row.filename = sanitized_filename
                 row.resume_text = sanitized_resume_text
+                row.file_bytes = file_bytes
+                row.file_mime_type = file_mime_type
+                row.file_size_bytes = file_size_bytes
+                row.file_sha256 = file_sha256
                 row.updated_at = now
 
             if parsed_interests:
@@ -946,6 +1056,23 @@ class MainPlatformStore:
             if row is None:
                 return None
             return self._to_resume(row)
+
+    def get_resume_file_bundle(self, user_id: str) -> dict[str, Any] | None:
+        with self._session_factory() as session:
+            row = session.scalar(
+                select(ResumeRow).where(ResumeRow.user_id == user_id).limit(1)
+            )
+            if row is None or not row.file_bytes:
+                return None
+            return {
+                "filename": row.filename,
+                "mime_type": row.file_mime_type,
+                "content_base64": base64.b64encode(row.file_bytes).decode("ascii"),
+                "size_bytes": row.file_size_bytes
+                if row.file_size_bytes is not None
+                else len(row.file_bytes),
+                "sha256": row.file_sha256 or sha256_hex(row.file_bytes),
+            }
 
     def create_external_run_ref(
         self,
@@ -1295,6 +1422,9 @@ class MainPlatformStore:
             user_id=row.user_id,
             filename=row.filename,
             resume_text=row.resume_text,
+            file_mime_type=row.file_mime_type,
+            file_size_bytes=row.file_size_bytes,
+            file_sha256=row.file_sha256,
             updated_at=row.updated_at,
         )
 
@@ -1381,6 +1511,19 @@ class CloudOrchestrationService:
     def get_application_profile(self, user_id: str) -> ApplicationProfileResponse | None:
         return self.store.get_application_profile(user_id)
 
+    @staticmethod
+    def _redact_apply_request_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        redacted = copy.deepcopy(payload)
+        profile_payload = redacted.get("profile_payload")
+        if not isinstance(profile_payload, dict):
+            return redacted
+        resume_file = profile_payload.get("resume_file")
+        if not isinstance(resume_file, dict):
+            return redacted
+        if "content_base64" in resume_file:
+            resume_file["content_base64"] = "<redacted>"
+        return redacted
+
     def start_match_run(
         self, *, user_id: str, payload: MatchRunStartRequest
     ) -> MatchRunStartResponse:
@@ -1446,6 +1589,7 @@ class CloudOrchestrationService:
     ) -> ApplyRunStartResponse:
         user, preferences, resume = self._require_user_context(user_id)
         application_profile = self.store.get_application_profile(user_id)
+        resume_file_payload = self.store.get_resume_file_bundle(user_id)
         daily_cap = (
             payload.daily_cap
             if payload.daily_cap is not None
@@ -1457,35 +1601,42 @@ class CloudOrchestrationService:
                 f"Daily cap exceeded: attempted={len(payload.jobs)} current={current_count} cap={daily_cap}"
             )
 
+        profile_payload: dict[str, Any] = {
+            "full_name": user.full_name,
+            "email": user.email,
+            "resume_text": resume.resume_text,
+            "preferences": preferences.model_dump(mode="json"),
+            "application_profile": (
+                application_profile.model_dump(mode="json")
+                if application_profile is not None
+                else {
+                    "user_id": user_id,
+                    "autosubmit_enabled": False,
+                    "custom_answers": [],
+                    "sensitive": SensitiveProfileResponse().model_dump(mode="json"),
+                }
+            ),
+        }
+        if resume_file_payload is not None:
+            profile_payload["resume_file"] = resume_file_payload
+
         cloud_request = CloudApplyRunRequest(
             user_ref=user_id,
             jobs=payload.jobs,
-            profile_payload={
-                "full_name": user.full_name,
-                "email": user.email,
-                "resume_text": resume.resume_text,
-                "preferences": preferences.model_dump(mode="json"),
-                "application_profile": (
-                    application_profile.model_dump(mode="json")
-                    if application_profile is not None
-                    else {
-                        "user_id": user_id,
-                        "autosubmit_enabled": False,
-                        "custom_answers": [],
-                        "sensitive": SensitiveProfileResponse().model_dump(mode="json"),
-                    }
-                ),
-            },
+            profile_payload=profile_payload,
             credentials_ref=payload.credentials_ref,
             daily_cap=daily_cap,
         )
         created = self.cloud_client.start_apply_run(cloud_request)
+        request_payload_for_storage = self._redact_apply_request_payload(
+            cloud_request.model_dump(mode="json")
+        )
         self.store.create_external_run_ref(
             user_id=user_id,
             run_type=RunKind.apply,
             external_run_id=created.run_id,
             status=created.status,
-            request_payload=cloud_request.model_dump(mode="json"),
+            request_payload=request_payload_for_storage,
         )
         return ApplyRunStartResponse(
             run_id=created.run_id,

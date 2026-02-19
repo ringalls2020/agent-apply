@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -18,8 +20,13 @@ from cloud_automation.db_models import (
     JobIdentityRow,
     NormalizedJobRow,
 )
+from cloud_automation.adapters.live import _parse_datetime
 from cloud_automation.services import CommonCrawlCoordinator, DiscoveryCoordinator, JobIntelStore
-from cloud_automation.services.ats_token_utils import build_job_identity, extract_ats_tokens_from_text
+from cloud_automation.services.ats_token_utils import (
+    ExtractedToken,
+    build_job_identity,
+    extract_ats_tokens_from_text,
+)
 from cloud_automation.services.discovery_pipeline import DiscoveryPipeline
 from cloud_automation.services.seed_manifest_builder import SeedManifestBuilder
 from cloud_automation.services.token_registry import TokenRegistryCoordinator
@@ -339,6 +346,136 @@ def test_build_job_identity_canonical_keys() -> None:
     assert lever.canonical_key == "lever:acme:abc-123"
     assert smart.canonical_key == "smartrecruiters:acme:xyz-999"
     assert fallback.canonical_key.startswith("other:")
+
+
+def test_parse_datetime_supports_iso_epoch_and_invalid_inputs() -> None:
+    expected = datetime(2024, 1, 1, 0, 0, 0)
+    assert _parse_datetime("2024-01-01T00:00:00Z") == expected
+    assert _parse_datetime(1_704_067_200) == expected
+    assert _parse_datetime(1_704_067_200_000) == expected
+    assert _parse_datetime(1_704_067_200_000_000) == expected
+    assert _parse_datetime("1704067200000") == expected
+    assert _parse_datetime("not-a-date") is None
+    assert _parse_datetime("") is None
+    assert _parse_datetime(None) is None
+    assert _parse_datetime(True) is None
+    assert _parse_datetime({"bad": "value"}) is None  # type: ignore[arg-type]
+
+
+def test_lever_ingest_parses_epoch_created_at(store: JobIntelStore) -> None:
+    store.record_extracted_tokens(
+        extracted_tokens={ExtractedToken(provider="lever", token="acme")},
+        method="method_a",
+        evidence_url="https://acme.example/careers",
+    )
+    store.set_token_validation_result(
+        provider="lever",
+        token="acme",
+        status="validated",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url == "https://api.lever.co/v0/postings/acme?mode=json":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "job-1",
+                        "text": "Backend Engineer",
+                        "categories": {"location": "United States"},
+                        "hostedUrl": "https://jobs.lever.co/acme/job-1",
+                        "createdAt": 1_704_067_200_000,
+                        "descriptionPlain": "Work on backend systems",
+                    }
+                ],
+            )
+        return httpx.Response(404)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    coordinator = TokenRegistryCoordinator(store=store, http_client=client)
+    discovered = coordinator.ingest_validated_jobs_once()
+    client.close()
+
+    assert discovered == 1
+    with store._session_factory() as session:
+        row = session.get(NormalizedJobRow, "lever-acme-job-1")
+        assert row is not None
+        assert row.posted_at is not None
+        assert row.posted_at == datetime(2024, 1, 1, 0, 0, 0)
+
+
+def test_token_registry_aggregates_parse_failure_logs(
+    store: JobIntelStore,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store.record_extracted_tokens(
+        extracted_tokens={ExtractedToken(provider="lever", token="noiseco")},
+        method="method_a",
+        evidence_url="https://noiseco.example/careers",
+    )
+    store.set_token_validation_result(
+        provider="lever",
+        token="noiseco",
+        status="validated",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url == "https://api.lever.co/v0/postings/noiseco?mode=json":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "bad-1",
+                        "text": "Bad Categories 1",
+                        "categories": [1],
+                        "createdAt": "2024-01-01T00:00:00Z",
+                    },
+                    {
+                        "id": "bad-2",
+                        "text": "Bad Categories 2",
+                        "categories": "not-a-dict",
+                        "createdAt": "2024-01-01T00:00:00Z",
+                    },
+                    {
+                        "id": "good-1",
+                        "text": "Good Posting",
+                        "categories": {"location": "Remote"},
+                        "hostedUrl": "https://jobs.lever.co/noiseco/good-1",
+                        "createdAt": 1_704_067_200_000,
+                        "descriptionPlain": "A valid posting",
+                    },
+                ],
+            )
+        return httpx.Response(404)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    coordinator = TokenRegistryCoordinator(store=store, http_client=client)
+    with caplog.at_level(logging.WARNING, logger="cloud_automation.services.token_registry"):
+        discovered = coordinator.ingest_validated_jobs_once()
+    client.close()
+
+    assert discovered == 1
+    summary_logs = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "validated_feed_parse_failed_summary"
+    ]
+    assert len(summary_logs) == 1
+    summary = summary_logs[0]
+    assert getattr(summary, "source", None) == "lever"
+    assert getattr(summary, "failed_count", None) == 2
+    sample_failures = getattr(summary, "sample_failures", [])
+    assert isinstance(sample_failures, list)
+    assert len(sample_failures) == 2
+    assert all("url" in item and "error" in item for item in sample_failures)
+    assert all(record.getMessage() != "validated_feed_parse_failed" for record in caplog.records)
+
+    with store._session_factory() as session:
+        row = session.get(NormalizedJobRow, "lever-noiseco-good-1")
+        assert row is not None
+        assert row.posted_at is not None
 
 
 def test_method_a_pipeline_ingests_validated_feed_jobs(
