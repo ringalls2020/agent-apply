@@ -14,9 +14,9 @@ type ButtonVariantOptions = {
 
 const variantClasses: Record<ButtonVariant, string> = {
   primary:
-    "bg-accent text-slate-950 shadow-neon hover:bg-accentSoft focus-visible:ring-accent/60 disabled:bg-accent/40",
+    "bg-accent text-neutral-950 shadow-neon hover:bg-accent/90 focus-visible:ring-accent/50 disabled:bg-accent/40",
   secondary:
-    "bg-surfaceAlt text-foreground hover:bg-surfaceAlt/80 focus-visible:ring-accent/45",
+    "bg-surfaceAlt text-foreground hover:bg-surfaceAlt/90 focus-visible:ring-accent/40",
   ghost: "bg-transparent text-muted hover:bg-surfaceAlt/70 hover:text-foreground focus-visible:ring-accent/45",
   danger:
     "bg-danger/20 text-danger hover:bg-danger/30 focus-visible:ring-danger/50 disabled:bg-danger/15 disabled:text-danger/65",

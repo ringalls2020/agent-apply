@@ -45,7 +45,7 @@ export function Nav() {
                 className={cn(
                   "inline-flex min-h-10 items-center rounded-xl2 px-2.5 py-2 text-sm font-medium transition duration-250 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/45 focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:px-3",
                   isActive
-                    ? "bg-accent/18 text-accentSoft shadow-[inset_0_0_0_1px_rgba(34,211,238,0.45)] ring-1 ring-accent/35"
+                    ? "bg-accent/16 text-foreground shadow-[inset_0_0_0_1px_rgba(212,212,212,0.28)] ring-1 ring-accent/30"
                     : "text-muted hover:bg-surfaceAlt/70 hover:text-foreground",
                 )}
               >

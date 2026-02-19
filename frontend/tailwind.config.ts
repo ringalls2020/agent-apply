@@ -23,8 +23,8 @@ const config: Config = {
         danger: "hsl(var(--danger) / <alpha-value>)",
       },
       boxShadow: {
-        neon: "0 0 0 1px hsl(var(--accent) / 0.22), 0 14px 34px hsl(var(--accent) / 0.24)",
-        panel: "0 8px 28px rgba(3, 5, 15, 0.55)",
+        neon: "0 0 0 1px hsl(var(--border) / 0.95), 0 18px 44px rgba(0, 0, 0, 0.42)",
+        panel: "0 12px 30px rgba(0, 0, 0, 0.45)",
       },
       borderRadius: {
         xl2: "1.15rem",
