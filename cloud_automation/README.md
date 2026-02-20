@@ -108,14 +108,31 @@ Discovery refresh queue flow:
 - `PLAYWRIGHT_NAV_TIMEOUT_SECONDS` (default: `20`)
 - `PLAYWRIGHT_ACTION_TIMEOUT_SECONDS` (default: `5`)
 - `PLAYWRIGHT_CAPTURE_SCREENSHOTS` (default: `true`)
+- `PLAYWRIGHT_FORM_ENGINE_V2_ENABLED` (default: `true`; enables multipass widget adapters + verification)
+- `PLAYWRIGHT_FORM_MAX_FIELD_RETRIES` (default: `3`)
+- `PLAYWRIGHT_FORM_LLM_FALLBACK_ENABLED` (default: `true`; constrained option-pick fallback only)
+- `PLAYWRIGHT_FORM_LLM_MIN_CONFIDENCE` (default: `0.65`)
+- `PLAYWRIGHT_FORM_LLM_MAX_CALLS` (default: `12`; per-attempt cap to prevent long stalls)
 - `ENABLE_APPLY_DEV_REVIEW_MODE` (default: `false`; local/dev/test only; opens headed browser, fills form, waits for user submit)
 - `APPLY_DEV_REVIEW_SUBMIT_TIMEOUT_SECONDS` (default: `300`)
 - `APPLY_DEV_REVIEW_POLL_INTERVAL_MS` (default: `500`)
 - `APPLY_DEV_REVIEW_SLOW_MO_MS` (default: `120`)
+- `APPLY_WORKER_ALLOW_DEV_REVIEW` (default: `false`; workers run autonomous mode unless explicitly overridden)
 - `OPENAI_API_KEY` (optional; enables LLM-generated long-form answers)
 - `OPENAI_MODEL` (default: `gpt-4.1-mini`)
 - `OPENAI_TIMEOUT_SECONDS` (default: `20`)
+- `OPENAI_MAX_RETRIES` (default: `2`; retries only on `429` and `5xx`)
+- `OPENAI_RETRY_BASE_SECONDS` (default: `0.75`)
+- `OPENAI_RETRY_MAX_SECONDS` (default: `4`)
 - `CLOUD_HTTP_TIMEOUT_SECONDS` (default: `20`; reused by callback emitter, OpenAI, crawler, and live feeds)
+
+Autonomous apply artifacts now include structured field diagnostics in addition to final page HTML/screenshot:
+- `playwright-field-trace.json` (field discovery, attempted values, adapter/verification outcomes, unresolved required fields)
+- Trace includes bootstrap gate actions/outcome, per-field intent (`short_fact_text`/`long_form_text`/`option_constrained`), combobox option-discovery traces, and unresolved buckets such as `combobox_options_not_discovered`, `combobox_option_not_clickable`, `ghost_required_ignored`, and `missing_profile_short_fact`.
+- File upload behavior is slot-aware:
+  - Resume files are uploaded only to resume/cv slots.
+  - Resume files are never reused for cover-letter file slots.
+  - Optional internal payload `profile_payload.cover_letter_file` can be provided for required cover-letter uploads.
 
 ## Local run
 

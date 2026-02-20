@@ -14,7 +14,12 @@ from cloud_automation.db_models import DiscoveryRefreshRequestRow, NormalizedJob
 from cloud_automation.main import create_app
 from cloud_automation.models import ApplyAttemptCallbackPayload, ApplyAttemptRecord, ApplyAttemptStatus
 from cloud_automation.security import create_hs256_jwt
-from cloud_automation.services import CallbackEmitter, PlaywrightApplyExecutor, SimulatedApplyExecutor
+from cloud_automation.services import (
+    ApplyExecutionFlags,
+    CallbackEmitter,
+    PlaywrightApplyExecutor,
+    SimulatedApplyExecutor,
+)
 
 
 def _auth_headers() -> dict[str, str]:
@@ -325,6 +330,18 @@ def test_apply_dev_review_mode_is_ignored_outside_dev_env(
         executor = app.state.apply._build_executor()
         assert isinstance(executor, PlaywrightApplyExecutor)
         assert executor.dev_review_mode is False
+
+
+def test_apply_dev_review_mode_can_be_disabled_for_worker_execution_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_AUTONOMOUS_BROWSING", "true")
+    monkeypatch.setenv("ENABLE_APPLY_DEV_REVIEW_MODE", "true")
+    monkeypatch.setenv("APP_ENV", "development")
+
+    flags = ApplyExecutionFlags(allow_dev_review=False)
+    assert flags.dev_review_requested is True
+    assert flags.dev_review_enabled is False
 
 
 def test_apply_dev_review_mode_requires_autonomous_browsing(

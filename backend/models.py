@@ -225,6 +225,12 @@ class ApplicationProfileUpsertRequest(BaseModel):
     city: str | None = None
     state: str | None = None
     country: str | None = None
+    current_company: str | None = None
+    most_recent_company: str | None = None
+    current_title: str | None = None
+    target_work_city: str | None = None
+    target_work_state: str | None = None
+    target_work_country: str | None = None
     linkedin_url: str | None = None
     github_url: str | None = None
     portfolio_url: str | None = None
@@ -247,6 +253,12 @@ class ApplicationProfileResponse(BaseModel):
     city: str | None = None
     state: str | None = None
     country: str | None = None
+    current_company: str | None = None
+    most_recent_company: str | None = None
+    current_title: str | None = None
+    target_work_city: str | None = None
+    target_work_state: str | None = None
+    target_work_country: str | None = None
     linkedin_url: str | None = None
     github_url: str | None = None
     portfolio_url: str | None = None

@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import base64
 import binascii
+from contextlib import suppress
+from dataclasses import dataclass
+import json
+import os
 import re
 from io import BytesIO
+
+import httpx
 
 MAX_RESUME_FILE_SIZE_BYTES = 8 * 1024 * 1024
 
@@ -75,6 +81,16 @@ RESUME_NOISE_TOKENS = {
     "team",
     "work",
 }
+
+
+@dataclass(frozen=True)
+class ResumeProfileExtraction:
+    current_company: str | None = None
+    most_recent_company: str | None = None
+    current_title: str | None = None
+    target_work_city: str | None = None
+    target_work_state: str | None = None
+    target_work_country: str | None = None
 
 
 def sanitize_resume_text(value: str) -> str:
@@ -217,9 +233,244 @@ def extract_resume_interests(resume_text: str, *, max_items: int = 15) -> list[s
     return [interest for _, interest in ranked[:max_items]]
 
 
+def _clean_resume_fact(value: str | None, *, max_length: int = 120) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    text = re.sub(r"\s+", " ", text).strip(" -|,")
+    if not text:
+        return None
+    if len(text) > max_length:
+        return text[:max_length].strip()
+    return text
+
+
+def _parse_location_triplet(raw: str) -> tuple[str | None, str | None, str | None]:
+    cleaned = _clean_resume_fact(raw, max_length=140)
+    if not cleaned:
+        return None, None, None
+    value = cleaned.replace("Remote", "").replace("remote", "").strip(" -,")
+    if not value:
+        return None, None, None
+    parts = [part.strip() for part in value.split(",") if part.strip()]
+    if len(parts) >= 3:
+        return (
+            _clean_resume_fact(parts[0], max_length=80),
+            _clean_resume_fact(parts[1], max_length=80),
+            _clean_resume_fact(parts[2], max_length=80),
+        )
+    if len(parts) == 2:
+        return (
+            _clean_resume_fact(parts[0], max_length=80),
+            None,
+            _clean_resume_fact(parts[1], max_length=80),
+        )
+    return None, None, _clean_resume_fact(parts[0], max_length=80)
+
+
+def _extract_company_title_from_lines(lines: list[str]) -> tuple[str | None, str | None]:
+    title: str | None = None
+    company: str | None = None
+
+    at_pattern = re.compile(
+        r"(?P<title>[A-Za-z][A-Za-z0-9/&,.()' \-]{2,90})\s+(?:at|@)\s+(?P<company>[A-Za-z][A-Za-z0-9&,.()' \-]{2,90})"
+    )
+    split_pattern = re.compile(
+        r"(?P<company>[A-Za-z][A-Za-z0-9&,.()' \-]{2,90})\s*[|\-]\s*(?P<title>[A-Za-z][A-Za-z0-9/&,.()' \-]{2,90})"
+    )
+
+    for line in lines[:80]:
+        if not line:
+            continue
+        if title is None or company is None:
+            match = at_pattern.search(line)
+            if match:
+                title = _clean_resume_fact(match.group("title"))
+                company = _clean_resume_fact(match.group("company"))
+                if title or company:
+                    break
+        if title is None or company is None:
+            match = split_pattern.search(line)
+            if match:
+                title = _clean_resume_fact(match.group("title"))
+                company = _clean_resume_fact(match.group("company"))
+                if title or company:
+                    break
+
+    if title is None or company is None:
+        for line in lines[:120]:
+            lowered = line.lower()
+            if company is None and "company" in lowered and ":" in line:
+                _, rhs = line.split(":", 1)
+                company = _clean_resume_fact(rhs)
+            if title is None and ("title" in lowered or "role" in lowered) and ":" in line:
+                _, rhs = line.split(":", 1)
+                title = _clean_resume_fact(rhs)
+            if title and company:
+                break
+
+    return title, company
+
+
+def _extract_target_work_location_from_lines(
+    lines: list[str],
+) -> tuple[str | None, str | None, str | None]:
+    location_hints = (
+        "location",
+        "located in",
+        "based in",
+        "target location",
+        "current location",
+    )
+    for line in lines[:120]:
+        lowered = line.lower()
+        if not any(token in lowered for token in location_hints):
+            continue
+        value = line
+        if ":" in line:
+            _, value = line.split(":", 1)
+        city, state, country = _parse_location_triplet(value)
+        if city or state or country:
+            return city, state, country
+
+    for line in lines[:80]:
+        if "," not in line:
+            continue
+        city, state, country = _parse_location_triplet(line)
+        if city or state or country:
+            return city, state, country
+    return None, None, None
+
+
+def _extract_json_object(raw: str) -> dict[str, object] | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    with suppress(Exception):
+        decoded = json.loads(text)
+        if isinstance(decoded, dict):
+            return decoded
+    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if not match:
+        return None
+    with suppress(Exception):
+        decoded = json.loads(match.group(0))
+        if isinstance(decoded, dict):
+            return decoded
+    return None
+
+
+def _extract_with_llm(resume_text: str) -> ResumeProfileExtraction | None:
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return None
+    if os.getenv("RESUME_PROFILE_LLM_FALLBACK_ENABLED", "true").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return None
+    model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini").strip()
+    timeout_seconds = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "20"))
+    payload = {
+        "model": model,
+        "input": (
+            "Extract applicant profile facts from this resume text. Return JSON only with keys: "
+            "current_company, most_recent_company, current_title, target_work_city, target_work_state, target_work_country. "
+            "Use null when unknown.\n\n"
+            + resume_text[:3500]
+        ),
+        "max_output_tokens": 220,
+    }
+    with httpx.Client(timeout=timeout_seconds) as client:
+        response = client.post(
+            "https://api.openai.com/v1/responses",
+            headers={
+                "authorization": f"Bearer {api_key}",
+                "content-type": "application/json",
+            },
+            json=payload,
+            timeout=timeout_seconds,
+        )
+        response.raise_for_status()
+        body = response.json()
+    output_text = str(body.get("output_text", "")).strip()
+    if not output_text:
+        output = body.get("output")
+        if isinstance(output, list):
+            for item in output:
+                if not isinstance(item, dict):
+                    continue
+                content = item.get("content")
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") in {"output_text", "text"}:
+                        output_text = str(block.get("text", "")).strip()
+                        if output_text:
+                            break
+                if output_text:
+                    break
+    decoded = _extract_json_object(output_text)
+    if not isinstance(decoded, dict):
+        return None
+    return ResumeProfileExtraction(
+        current_company=_clean_resume_fact(decoded.get("current_company")),
+        most_recent_company=_clean_resume_fact(decoded.get("most_recent_company")),
+        current_title=_clean_resume_fact(decoded.get("current_title")),
+        target_work_city=_clean_resume_fact(decoded.get("target_work_city")),
+        target_work_state=_clean_resume_fact(decoded.get("target_work_state")),
+        target_work_country=_clean_resume_fact(decoded.get("target_work_country")),
+    )
+
+
+def extract_resume_profile_facts(resume_text: str) -> ResumeProfileExtraction:
+    sanitized = sanitize_resume_text(resume_text)
+    if not sanitized:
+        return ResumeProfileExtraction()
+    lines = [line.strip() for line in sanitized.splitlines() if line.strip()]
+    title, company = _extract_company_title_from_lines(lines)
+    location_city, location_state, location_country = _extract_target_work_location_from_lines(lines)
+    extracted = ResumeProfileExtraction(
+        current_company=company,
+        most_recent_company=company,
+        current_title=title,
+        target_work_city=location_city,
+        target_work_state=location_state,
+        target_work_country=location_country,
+    )
+    if all(
+        getattr(extracted, field) is not None
+        for field in (
+            "current_company",
+            "most_recent_company",
+            "current_title",
+            "target_work_city",
+            "target_work_state",
+            "target_work_country",
+        )
+    ):
+        return extracted
+    with suppress(Exception):
+        llm = _extract_with_llm(sanitized)
+        if llm is not None:
+            return ResumeProfileExtraction(
+                current_company=extracted.current_company or llm.current_company,
+                most_recent_company=extracted.most_recent_company or llm.most_recent_company,
+                current_title=extracted.current_title or llm.current_title,
+                target_work_city=extracted.target_work_city or llm.target_work_city,
+                target_work_state=extracted.target_work_state or llm.target_work_state,
+                target_work_country=extracted.target_work_country or llm.target_work_country,
+            )
+    return extracted
+
+
 __all__ = [
+    "ResumeProfileExtraction",
     "sanitize_resume_text",
     "extract_resume_interests",
+    "extract_resume_profile_facts",
     "normalize_interest_token",
     "decode_resume_file_content_base64",
     "extract_resume_text_from_file",

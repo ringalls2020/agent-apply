@@ -115,7 +115,8 @@ class SimulatedApplyExecutor:
 class ApplyExecutionFlags:
     DEV_REVIEW_ALLOWED_ENVS = {"local", "dev", "development", "test"}
 
-    def __init__(self) -> None:
+    def __init__(self, *, allow_dev_review: bool = True) -> None:
+        self.allow_dev_review = bool(allow_dev_review)
         self.autonomous_browsing_enabled = _bool_env("ENABLE_AUTONOMOUS_BROWSING", False)
         self.dev_review_requested = _bool_env("ENABLE_APPLY_DEV_REVIEW_MODE", False)
         self.app_env = (
@@ -123,7 +124,11 @@ class ApplyExecutionFlags:
             or "development"
         )
         self.dev_review_env_allowed = self.app_env in self.DEV_REVIEW_ALLOWED_ENVS
-        self.dev_review_enabled = self.dev_review_requested and self.dev_review_env_allowed
+        self.dev_review_enabled = (
+            self.dev_review_requested
+            and self.dev_review_env_allowed
+            and self.allow_dev_review
+        )
         self.submit_timeout_seconds = _int_env(
             "APPLY_DEV_REVIEW_SUBMIT_TIMEOUT_SECONDS",
             300,
@@ -149,9 +154,11 @@ class ApplyService:
         store: JobIntelStore,
         callback_emitter: CallbackEmitter,
         http_client: httpx.Client | None = None,
+        allow_dev_review: bool = True,
     ) -> None:
         self.store = store
         self.callback_emitter = callback_emitter
+        self.allow_dev_review = bool(allow_dev_review)
         self._owns_http_client = http_client is None
         self.http_client = http_client or httpx.Client(timeout=20.0)
         self.answer_synthesizer = FormAnswerSynthesizer(
@@ -159,12 +166,14 @@ class ApplyService:
         )
 
     def _build_executor(self) -> ApplyExecutor:
-        flags = ApplyExecutionFlags()
+        flags = ApplyExecutionFlags(allow_dev_review=self.allow_dev_review)
         if flags.dev_review_requested and not flags.dev_review_env_allowed:
             logger.info(
                 "apply_dev_review_mode_ignored_for_non_dev_environment",
                 extra={"app_env": flags.app_env},
             )
+        if flags.dev_review_requested and not self.allow_dev_review:
+            logger.info("apply_dev_review_mode_disabled_for_execution_context")
 
         if flags.autonomous_browsing_enabled:
             try:

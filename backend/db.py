@@ -127,6 +127,35 @@ def ensure_runtime_schema_compatibility(engine: Engine) -> int:
         if "file_sha256" not in existing_columns:
             statements.append("ALTER TABLE resumes ADD COLUMN file_sha256 VARCHAR(64)")
 
+    if inspector.has_table("user_application_profiles"):
+        profile_columns = {
+            column["name"] for column in inspector.get_columns("user_application_profiles")
+        }
+        if "current_company" not in profile_columns:
+            statements.append(
+                "ALTER TABLE user_application_profiles ADD COLUMN current_company VARCHAR(255)"
+            )
+        if "most_recent_company" not in profile_columns:
+            statements.append(
+                "ALTER TABLE user_application_profiles ADD COLUMN most_recent_company VARCHAR(255)"
+            )
+        if "current_title" not in profile_columns:
+            statements.append(
+                "ALTER TABLE user_application_profiles ADD COLUMN current_title VARCHAR(255)"
+            )
+        if "target_work_city" not in profile_columns:
+            statements.append(
+                "ALTER TABLE user_application_profiles ADD COLUMN target_work_city VARCHAR(128)"
+            )
+        if "target_work_state" not in profile_columns:
+            statements.append(
+                "ALTER TABLE user_application_profiles ADD COLUMN target_work_state VARCHAR(128)"
+            )
+        if "target_work_country" not in profile_columns:
+            statements.append(
+                "ALTER TABLE user_application_profiles ADD COLUMN target_work_country VARCHAR(128)"
+            )
+
     # Older deployments may still have opportunity_id at VARCHAR(36),
     # which truncates provider-prefixed external IDs (for example lever-*).
     if dialect == "postgresql" and inspector.has_table("applications"):

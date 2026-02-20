@@ -69,6 +69,7 @@ from ..security import (
 from .resume_utils import (
     decode_resume_file_content_base64,
     extract_resume_interests,
+    extract_resume_profile_facts,
     extract_resume_text_from_file,
     normalize_interest_token,
     sanitize_resume_text,
@@ -273,6 +274,12 @@ class MainPlatformStore:
             row.city = _normalize_optional_text(payload.city)
             row.state = _normalize_optional_text(payload.state)
             row.country = _normalize_optional_text(payload.country)
+            row.current_company = _normalize_optional_text(payload.current_company)
+            row.most_recent_company = _normalize_optional_text(payload.most_recent_company)
+            row.current_title = _normalize_optional_text(payload.current_title)
+            row.target_work_city = _normalize_optional_text(payload.target_work_city)
+            row.target_work_state = _normalize_optional_text(payload.target_work_state)
+            row.target_work_country = _normalize_optional_text(payload.target_work_country)
 
             row.linkedin_url = _normalize_optional_text(payload.linkedin_url)
             row.github_url = _normalize_optional_text(payload.github_url)
@@ -345,6 +352,7 @@ class MainPlatformStore:
         if not sanitized_resume_text:
             raise ValueError("Resume text is empty after sanitization")
         parsed_interests = extract_resume_interests(sanitized_resume_text)
+        extracted_profile_facts = extract_resume_profile_facts(sanitized_resume_text)
 
         with self._session_factory() as session:
             row = session.scalar(
@@ -396,6 +404,37 @@ class MainPlatformStore:
                     preferences_row.interests_json = _json_dumps(filtered_parsed_interests)
                     preferences_row.updated_at = now
 
+            extracted_fact_rows = {
+                "current_company": _normalize_optional_text(extracted_profile_facts.current_company),
+                "most_recent_company": _normalize_optional_text(extracted_profile_facts.most_recent_company),
+                "current_title": _normalize_optional_text(extracted_profile_facts.current_title),
+                "target_work_city": _normalize_optional_text(extracted_profile_facts.target_work_city),
+                "target_work_state": _normalize_optional_text(extracted_profile_facts.target_work_state),
+                "target_work_country": _normalize_optional_text(extracted_profile_facts.target_work_country),
+            }
+            has_extracted_profile_fact = any(value is not None for value in extracted_fact_rows.values())
+            applied_profile_fact_count = 0
+            if has_extracted_profile_fact:
+                application_profile_row = session.get(UserApplicationProfileRow, user_id)
+                if application_profile_row is None:
+                    application_profile_row = UserApplicationProfileRow(
+                        user_id=user_id,
+                        autosubmit_enabled=False,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    session.add(application_profile_row)
+                for column_name, extracted_value in extracted_fact_rows.items():
+                    if extracted_value is None:
+                        continue
+                    existing_value = getattr(application_profile_row, column_name, None)
+                    if existing_value is not None and str(existing_value).strip():
+                        continue
+                    setattr(application_profile_row, column_name, extracted_value)
+                    applied_profile_fact_count += 1
+                if applied_profile_fact_count > 0:
+                    application_profile_row.updated_at = now
+
             preferences_for_profile = (
                 preferences_row
                 if filtered_parsed_interests
@@ -424,6 +463,14 @@ class MainPlatformStore:
                     extra={
                         "user_id": user_id,
                         "interest_count": len(filtered_parsed_interests),
+                    },
+                )
+            if has_extracted_profile_fact:
+                logger.info(
+                    "resume_profile_facts_extracted",
+                    extra={
+                        "user_id": user_id,
+                        "applied_count": applied_profile_fact_count,
                     },
                 )
             return self._to_resume(row)
@@ -2123,6 +2170,12 @@ class MainPlatformStore:
             city=row.city,
             state=row.state,
             country=row.country,
+            current_company=row.current_company,
+            most_recent_company=row.most_recent_company,
+            current_title=row.current_title,
+            target_work_city=row.target_work_city,
+            target_work_state=row.target_work_state,
+            target_work_country=row.target_work_country,
             linkedin_url=row.linkedin_url,
             github_url=row.github_url,
             portfolio_url=row.portfolio_url,

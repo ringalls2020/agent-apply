@@ -298,6 +298,72 @@ def test_graphql_upload_resume_supports_base64_text_payload(test_client: TestCli
         assert row.file_sha256
 
 
+def test_graphql_profile_supports_resume_expansion_fields(test_client: TestClient) -> None:
+    signup = _signup_user(
+        test_client,
+        full_name="Profile Fields",
+        email="profile-fields@example.com",
+    )
+    token = signup["token"]
+
+    mutation_result = _graphql(
+        test_client,
+        """
+        mutation UpdateProfile($input: ApplicationProfileInput!) {
+          updateProfile(input: $input) {
+            currentCompany
+            mostRecentCompany
+            currentTitle
+            targetWorkCity
+            targetWorkState
+            targetWorkCountry
+          }
+        }
+        """,
+        {
+            "input": {
+                "autosubmitEnabled": False,
+                "currentCompany": "ManualCorp",
+                "mostRecentCompany": "ManualCorp",
+                "currentTitle": "Principal Engineer",
+                "targetWorkCity": "Austin",
+                "targetWorkState": "Texas",
+                "targetWorkCountry": "United States",
+            }
+        },
+        token=token,
+    )
+    assert "errors" not in mutation_result
+    payload = mutation_result["data"]["updateProfile"]
+    assert payload["currentCompany"] == "ManualCorp"
+    assert payload["currentTitle"] == "Principal Engineer"
+
+    query_result = _graphql(
+        test_client,
+        """
+        query Profile {
+          profile {
+            currentCompany
+            mostRecentCompany
+            currentTitle
+            targetWorkCity
+            targetWorkState
+            targetWorkCountry
+          }
+        }
+        """,
+        token=token,
+    )
+    assert "errors" not in query_result
+    profile = query_result["data"]["profile"]
+    assert profile["currentCompany"] == "ManualCorp"
+    assert profile["mostRecentCompany"] == "ManualCorp"
+    assert profile["currentTitle"] == "Principal Engineer"
+    assert profile["targetWorkCity"] == "Austin"
+    assert profile["targetWorkState"] == "Texas"
+    assert profile["targetWorkCountry"] == "United States"
+
+
 def test_upload_resume_populates_preference_graph_rows(test_client: TestClient) -> None:
     signup = _signup_user(
         test_client,

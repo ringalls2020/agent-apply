@@ -82,6 +82,12 @@ export type BackendApplicationProfile = {
   city: string | null;
   state: string | null;
   country: string | null;
+  current_company: string | null;
+  most_recent_company: string | null;
+  current_title: string | null;
+  target_work_city: string | null;
+  target_work_state: string | null;
+  target_work_country: string | null;
   linkedin_url: string | null;
   github_url: string | null;
   portfolio_url: string | null;
@@ -115,6 +121,12 @@ export type GraphQLProfileInput = {
   city?: string | null;
   state?: string | null;
   country?: string | null;
+  currentCompany?: string | null;
+  mostRecentCompany?: string | null;
+  currentTitle?: string | null;
+  targetWorkCity?: string | null;
+  targetWorkState?: string | null;
+  targetWorkCountry?: string | null;
   linkedinUrl?: string | null;
   githubUrl?: string | null;
   portfolioUrl?: string | null;
@@ -162,6 +174,12 @@ export function defaultProfile(userId: string): BackendApplicationProfile {
     city: null,
     state: null,
     country: null,
+    current_company: null,
+    most_recent_company: null,
+    current_title: null,
+    target_work_city: null,
+    target_work_state: null,
+    target_work_country: null,
     linkedin_url: null,
     github_url: null,
     portfolio_url: null,
@@ -216,6 +234,12 @@ export function toBackendProfilePayload(
     city: input.city ?? current.city,
     state: input.state ?? current.state,
     country: input.country ?? current.country,
+    current_company: input.currentCompany ?? current.current_company,
+    most_recent_company: input.mostRecentCompany ?? current.most_recent_company,
+    current_title: input.currentTitle ?? current.current_title,
+    target_work_city: input.targetWorkCity ?? current.target_work_city,
+    target_work_state: input.targetWorkState ?? current.target_work_state,
+    target_work_country: input.targetWorkCountry ?? current.target_work_country,
     linkedin_url: input.linkedinUrl ?? current.linkedin_url,
     github_url: input.githubUrl ?? current.github_url,
     portfolio_url: input.portfolioUrl ?? current.portfolio_url,

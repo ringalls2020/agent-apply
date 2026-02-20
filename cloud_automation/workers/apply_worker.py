@@ -20,6 +20,13 @@ from cloud_automation.services import ApplyService, CallbackEmitter, JobIntelSto
 logger = logging.getLogger(__name__)
 
 
+def _bool_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _process_run(*, run_id: str, store: JobIntelStore, service: ApplyService) -> None:
     if not store.claim_apply_run(run_id):
         return
@@ -36,18 +43,35 @@ def run() -> None:
     http_timeout = float(os.getenv("CLOUD_HTTP_TIMEOUT_SECONDS", "20"))
     http_client = httpx.Client(timeout=http_timeout)
     callback_emitter = CallbackEmitter(http_client=http_client)
+    allow_dev_review = _bool_env("APPLY_WORKER_ALLOW_DEV_REVIEW", False)
+    dev_review_requested = _bool_env("ENABLE_APPLY_DEV_REVIEW_MODE", False)
     service = ApplyService(
         store=store,
         callback_emitter=callback_emitter,
         http_client=http_client,
+        allow_dev_review=allow_dev_review,
     )
 
     poll_seconds = int(os.getenv("APPLY_WORKER_POLL_SECONDS", "5"))
     concurrency = max(1, int(os.getenv("APPLY_WORKER_CONCURRENCY", "1")))
     logger.info(
         "apply_worker_started",
-        extra={"poll_seconds": poll_seconds, "concurrency": concurrency},
+        extra={
+            "poll_seconds": poll_seconds,
+            "concurrency": concurrency,
+            "allow_dev_review": allow_dev_review,
+            "dev_review_requested": dev_review_requested,
+        },
     )
+    if allow_dev_review and dev_review_requested:
+        logger.warning(
+            "apply_worker_manual_review_mode_enabled",
+            extra={
+                "message_detail": (
+                    "apply_worker will run manual-review flow and wait for user submission."
+                )
+            },
+        )
 
     try:
         while True:

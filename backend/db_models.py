@@ -96,6 +96,12 @@ class UserApplicationProfileRow(Base):
     city: Mapped[str | None] = mapped_column(String(128))
     state: Mapped[str | None] = mapped_column(String(128))
     country: Mapped[str | None] = mapped_column(String(128))
+    current_company: Mapped[str | None] = mapped_column(String(255))
+    most_recent_company: Mapped[str | None] = mapped_column(String(255))
+    current_title: Mapped[str | None] = mapped_column(String(255))
+    target_work_city: Mapped[str | None] = mapped_column(String(128))
+    target_work_state: Mapped[str | None] = mapped_column(String(128))
+    target_work_country: Mapped[str | None] = mapped_column(String(128))
 
     linkedin_url: Mapped[str | None] = mapped_column(Text)
     github_url: Mapped[str | None] = mapped_column(Text)

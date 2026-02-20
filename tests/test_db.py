@@ -10,6 +10,7 @@ from backend.db_models import (
     PreferenceProfileRow,
     RecommendationEventRow,
     RecommendationImpressionRow,
+    UserApplicationProfileRow,
 )
 from cloud_automation.db import (
     DEFAULT_DATABASE_URL as CLOUD_DEFAULT_DATABASE_URL,
@@ -102,3 +103,16 @@ def test_recommendation_instrumentation_tables_are_declared() -> None:
     assert RecommendationImpressionRow.__tablename__ == "recommendation_impressions"
     assert RecommendationEventRow.__tablename__ == "recommendation_events"
     assert EvaluationMetricSnapshotRow.__tablename__ == "evaluation_metric_snapshots"
+
+
+def test_application_profile_resume_expansion_columns_exist() -> None:
+    columns = UserApplicationProfileRow.__table__.c
+    for column_name in (
+        "current_company",
+        "most_recent_company",
+        "current_title",
+        "target_work_city",
+        "target_work_state",
+        "target_work_country",
+    ):
+        assert column_name in columns

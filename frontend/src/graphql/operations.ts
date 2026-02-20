@@ -226,6 +226,12 @@ export const PROFILE = gql`
       city
       state
       country
+      currentCompany
+      mostRecentCompany
+      currentTitle
+      targetWorkCity
+      targetWorkState
+      targetWorkCountry
       linkedinUrl
       githubUrl
       portfolioUrl
@@ -267,6 +273,12 @@ export const UPDATE_PROFILE = gql`
       city
       state
       country
+      currentCompany
+      mostRecentCompany
+      currentTitle
+      targetWorkCity
+      targetWorkState
+      targetWorkCountry
       linkedinUrl
       githubUrl
       portfolioUrl

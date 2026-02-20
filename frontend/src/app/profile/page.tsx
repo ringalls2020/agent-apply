@@ -24,6 +24,12 @@ type ProfileQuery = {
     city: string | null;
     state: string | null;
     country: string | null;
+    currentCompany: string | null;
+    mostRecentCompany: string | null;
+    currentTitle: string | null;
+    targetWorkCity: string | null;
+    targetWorkState: string | null;
+    targetWorkCountry: string | null;
     linkedinUrl: string | null;
     githubUrl: string | null;
     portfolioUrl: string | null;
@@ -63,6 +69,12 @@ type FormState = {
   city: string;
   state: string;
   country: string;
+  currentCompany: string;
+  mostRecentCompany: string;
+  currentTitle: string;
+  targetWorkCity: string;
+  targetWorkState: string;
+  targetWorkCountry: string;
   linkedinUrl: string;
   githubUrl: string;
   portfolioUrl: string;
@@ -139,6 +151,12 @@ function defaultState(): FormState {
     city: "",
     state: "",
     country: "",
+    currentCompany: "",
+    mostRecentCompany: "",
+    currentTitle: "",
+    targetWorkCity: "",
+    targetWorkState: "",
+    targetWorkCountry: "",
     linkedinUrl: "",
     githubUrl: "",
     portfolioUrl: "",
@@ -203,6 +221,12 @@ function ProfileInner() {
       city: profile.city || "",
       state: profile.state || "",
       country: profile.country || "",
+      currentCompany: profile.currentCompany || "",
+      mostRecentCompany: profile.mostRecentCompany || "",
+      currentTitle: profile.currentTitle || "",
+      targetWorkCity: profile.targetWorkCity || "",
+      targetWorkState: profile.targetWorkState || "",
+      targetWorkCountry: profile.targetWorkCountry || "",
       linkedinUrl: profile.linkedinUrl || "",
       githubUrl: profile.githubUrl || "",
       portfolioUrl: profile.portfolioUrl || "",
@@ -343,6 +367,12 @@ function ProfileInner() {
                       city: form.city || null,
                       state: form.state || null,
                       country: form.country || null,
+                      currentCompany: form.currentCompany || null,
+                      mostRecentCompany: form.mostRecentCompany || null,
+                      currentTitle: form.currentTitle || null,
+                      targetWorkCity: form.targetWorkCity || null,
+                      targetWorkState: form.targetWorkState || null,
+                      targetWorkCountry: form.targetWorkCountry || null,
                       linkedinUrl: form.linkedinUrl || null,
                       githubUrl: form.githubUrl || null,
                       portfolioUrl: form.portfolioUrl || null,
@@ -567,6 +597,46 @@ function ProfileInner() {
                 label="Country"
                 value={form.country}
                 onChange={(e) => setForm((current) => ({ ...current, country: e.target.value }))}
+              />
+              <FormField
+                id="profile-current-company"
+                label="Current Company"
+                value={form.currentCompany}
+                onChange={(e) => setForm((current) => ({ ...current, currentCompany: e.target.value }))}
+              />
+              <FormField
+                id="profile-most-recent-company"
+                label="Most Recent Company"
+                value={form.mostRecentCompany}
+                onChange={(e) =>
+                  setForm((current) => ({ ...current, mostRecentCompany: e.target.value }))
+                }
+              />
+              <FormField
+                id="profile-current-title"
+                label="Current Title"
+                value={form.currentTitle}
+                onChange={(e) => setForm((current) => ({ ...current, currentTitle: e.target.value }))}
+              />
+              <FormField
+                id="profile-target-work-city"
+                label="Target Work City"
+                value={form.targetWorkCity}
+                onChange={(e) => setForm((current) => ({ ...current, targetWorkCity: e.target.value }))}
+              />
+              <FormField
+                id="profile-target-work-state"
+                label="Target Work State"
+                value={form.targetWorkState}
+                onChange={(e) => setForm((current) => ({ ...current, targetWorkState: e.target.value }))}
+              />
+              <FormField
+                id="profile-target-work-country"
+                label="Target Work Country"
+                value={form.targetWorkCountry}
+                onChange={(e) =>
+                  setForm((current) => ({ ...current, targetWorkCountry: e.target.value }))
+                }
               />
               <FormField
                 id="profile-years"
