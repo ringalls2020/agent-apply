@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "command": "filepath=\"$CLAUDE_FILE_PATH\"; if [[ \"$filepath\" == */frontend/* && (\"$filepath\" == *.ts || \"$filepath\" == *.tsx || \"$filepath\" == *.js || \"$filepath\" == *.jsx) ]]; then cd \"$(git rev-parse --show-toplevel)/frontend\" && npx eslint --fix \"$filepath\" 2>/dev/null; fi"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "command": "filepath=\"$CLAUDE_FILE_PATH\"; if [[ \"$filepath\" == *.env || \"$filepath\" == *.env.* || \"$filepath\" == *credentials* || \"$filepath\" == *package-lock.json ]]; then echo 'BLOCKED: Cannot edit .env, credentials, or lock files directly. Ask the user to make these changes manually.' >&2; exit 1; fi"
+      }
+    ]
+  }
+}
